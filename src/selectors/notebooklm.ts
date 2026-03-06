@@ -113,11 +113,35 @@ export const NOTEBOOKLM_SELECTORS = {
     '[class*="delete"] button'
   ],
   deleteTextHints: ['delete', 'remove', '削除'],
+  sourceActionMenuButtons: [
+    'button[aria-label*="More"]',
+    'button[aria-label*="more"]',
+    'button[aria-label*="その他"]',
+    'button[aria-label*="メニュー"]',
+    'button[data-testid*="more"]',
+    'button[data-testid*="menu"]',
+    'button[class*="more"]',
+    'button[class*="menu"]'
+  ],
+  sourceActionMenuTextHints: ['more', 'menu', 'その他', 'メニュー', 'options', 'オプション'],
+  menuContainers: [
+    '[role="menu"]',
+    '[role="listbox"]',
+    '[data-testid*="menu"]',
+    '[class*="menu"]',
+    '[class*="popover"]'
+  ],
+  menuDeleteTextHints: ['delete', 'remove', '削除', 'ソースを削除', 'delete source'],
+  confirmDialogContainers: ['[role="dialog"]', '[aria-modal="true"]'],
+  confirmDialogTextHints: ['削除', 'delete', '本当に', 'are you sure', 'confirm'],
 
   confirmButtons: [
     'button[data-testid*="confirm"]',
     'button[data-testid*="delete-confirm"]',
-    '[class*="confirm"] button'
+    '[class*="confirm"] button',
+    'button[data-testid*="delete"]',
+    'button[aria-label*="Delete"]',
+    'button[aria-label*="削除"]'
   ],
   confirmTextHints: ['delete', 'confirm', 'yes', '削除', '確認', '実行']
 };

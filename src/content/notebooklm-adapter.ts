@@ -764,6 +764,7 @@ export class NotebookLMAdapter {
     for (const selector of NOTEBOOKLM_SELECTORS.deleteButtons) {
       for (const node of Array.from(document.querySelectorAll<HTMLElement>(selector))) {
         if (isAssistantUiNode(node)) continue;
+        if (!isVisible(node)) continue;
         buttons.add(node);
       }
     }
@@ -778,6 +779,230 @@ export class NotebookLMAdapter {
     }
 
     return Array.from(buttons);
+  }
+
+  private normalizeSourceKey(text: string): string {
+    return text.replace(/\s+/g, ' ').trim().toLowerCase();
+  }
+
+  private isConnectedVisible(el: HTMLElement | null | undefined): el is HTMLElement {
+    return !!el && el.isConnected && isVisible(el);
+  }
+
+  private findLiveSourceRecord(source: SourceRecord): SourceRecord | null {
+    if (this.isConnectedVisible(source.cardEl)) {
+      return source;
+    }
+
+    const current = this.collectSourceCards();
+    if (current.length === 0) return null;
+
+    const titleKey = this.normalizeSourceKey(source.title);
+    const bodyKey = this.normalizeSourceKey(source.body).slice(0, 120);
+    let best: { score: number; item: SourceRecord } | null = null;
+
+    for (const item of current) {
+      let score = 0;
+      if (source.id && item.id === source.id) score += 6;
+
+      const itemTitleKey = this.normalizeSourceKey(item.title);
+      if (itemTitleKey === titleKey) score += 5;
+      else if (itemTitleKey && titleKey && (itemTitleKey.includes(titleKey) || titleKey.includes(itemTitleKey))) score += 3;
+
+      if (source.url && item.url && source.url === item.url) score += 2;
+
+      const itemBodyKey = this.normalizeSourceKey(item.body).slice(0, 120);
+      if (bodyKey && itemBodyKey && (itemBodyKey.includes(bodyKey) || bodyKey.includes(itemBodyKey))) score += 1;
+
+      if (score > 0 && (!best || score > best.score)) {
+        best = { score, item };
+      }
+    }
+
+    return best?.item ?? null;
+  }
+
+  private revealSourceCardActions(card: HTMLElement): void {
+    try {
+      card.scrollIntoView({ block: 'center', inline: 'nearest' });
+    } catch {
+      // no-op
+    }
+
+    const events: Array<'mouseenter' | 'mousemove' | 'mouseover'> = ['mouseenter', 'mousemove', 'mouseover'];
+    for (const eventName of events) {
+      card.dispatchEvent(new MouseEvent(eventName, { bubbles: true, cancelable: true }));
+    }
+  }
+
+  private findSourceActionMenuButton(card: HTMLElement): HTMLElement | null {
+    const bySelector = queryFirstVisible<HTMLElement>(NOTEBOOKLM_SELECTORS.sourceActionMenuButtons, card);
+    if (bySelector) return bySelector;
+
+    const byHint = this.findButtonByHints(card, NOTEBOOKLM_SELECTORS.sourceActionMenuTextHints);
+    if (byHint) return byHint;
+
+    const iconOnlyButtons = Array.from(card.querySelectorAll<HTMLElement>('button, [role="button"]'))
+      .filter((node) => isVisible(node))
+      .filter((node) => {
+        const label = (node.innerText || node.getAttribute('aria-label') || '').trim();
+        return !label && !!node.querySelector('svg, [data-icon], [class*="icon"]');
+      });
+
+    return iconOnlyButtons.length > 0 ? iconOnlyButtons[iconOnlyButtons.length - 1] : null;
+  }
+
+  private findVisibleMenuContainer(): HTMLElement | null {
+    let fallback: HTMLElement | null = null;
+    let preferred: HTMLElement | null = null;
+
+    for (const selector of NOTEBOOKLM_SELECTORS.menuContainers) {
+      for (const node of queryAllDeep<HTMLElement>(document, selector)) {
+        if (isAssistantUiNode(node)) continue;
+        if (!isVisible(node)) continue;
+        fallback = node;
+        const text = readElementText(node);
+        if (text && containsAny(text, NOTEBOOKLM_SELECTORS.menuDeleteTextHints)) {
+          preferred = node;
+        }
+      }
+    }
+
+    return preferred ?? fallback;
+  }
+
+  private findDeleteActionInContainer(container: ParentNode): HTMLElement | null {
+    const directButton = queryFirstVisible<HTMLElement>(NOTEBOOKLM_SELECTORS.deleteButtons, container);
+    if (directButton) return directButton;
+
+    const byHintButton = this.findButtonByHints(container, NOTEBOOKLM_SELECTORS.menuDeleteTextHints);
+    if (byHintButton) return byHintButton;
+
+    const candidates = Array.from(container.querySelectorAll<HTMLElement>('[role="menuitem"], [role="option"], button, [role="button"], li, div'));
+    for (const node of candidates) {
+      if (!isVisible(node)) continue;
+      if (isAssistantUiNode(node)) continue;
+      const label = `${readElementText(node)} ${(node.getAttribute('aria-label') || '').trim()}`;
+      if (!label) continue;
+      if (containsAny(label, NOTEBOOKLM_SELECTORS.menuDeleteTextHints)) {
+        return node;
+      }
+    }
+    return null;
+  }
+
+  private async waitForDeleteActionInMenu(timeoutMs = 2400): Promise<HTMLElement | null> {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const menu = this.findVisibleMenuContainer();
+      if (menu) {
+        const action = this.findDeleteActionInContainer(menu);
+        if (action) return action;
+      }
+      await wait(100);
+    }
+    return null;
+  }
+
+  private findConfirmDeleteButton(): HTMLElement | null {
+    for (const selector of NOTEBOOKLM_SELECTORS.confirmDialogContainers) {
+      for (const dialog of queryAllDeep<HTMLElement>(document, selector)) {
+        if (isAssistantUiNode(dialog)) continue;
+        if (!isVisible(dialog)) continue;
+
+        const text = readElementText(dialog);
+        if (!containsAny(text, NOTEBOOKLM_SELECTORS.confirmDialogTextHints)) continue;
+
+        const inDialog = queryFirstVisible<HTMLElement>(NOTEBOOKLM_SELECTORS.confirmButtons, dialog) ||
+          this.findButtonByHints(dialog, NOTEBOOKLM_SELECTORS.confirmTextHints);
+        if (inDialog) return inDialog;
+      }
+    }
+
+    return queryFirstVisible<HTMLElement>(NOTEBOOKLM_SELECTORS.confirmButtons) ||
+      findClickableByText(NOTEBOOKLM_SELECTORS.confirmTextHints);
+  }
+
+  private async waitForConfirmDeleteButton(timeoutMs = 3200): Promise<HTMLElement | null> {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const confirm = this.findConfirmDeleteButton();
+      if (confirm) return confirm;
+      await wait(120);
+    }
+    return null;
+  }
+
+  private async waitForSourceDisappear(source: SourceRecord, timeoutMs = 5000): Promise<boolean> {
+    const sourceTitleKey = this.normalizeSourceKey(source.title);
+    const sourceId = source.id;
+    const sourcePath = source.domPathHint || '';
+
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      if (!source.cardEl.isConnected) return true;
+
+      const cards = this.collectSourceCards();
+      const exists = cards.some((card) => {
+        if (sourceId && card.id === sourceId) return true;
+        if (sourcePath && card.domPathHint === sourcePath) return true;
+        return this.normalizeSourceKey(card.title) === sourceTitleKey;
+      });
+      if (!exists) return true;
+
+      await wait(140);
+    }
+
+    return false;
+  }
+
+  private async deleteSingleSource(source: SourceRecord): Promise<{ ok: boolean; reason?: string }> {
+    const liveSource = this.findLiveSourceRecord(source);
+    if (!liveSource) {
+      return { ok: false, reason: '対象ソースカードを再取得できませんでした' };
+    }
+
+    const card = liveSource.cardEl;
+    this.revealSourceCardActions(card);
+    await wait(120);
+
+    let deleteTrigger = liveSource.deleteButtonEl;
+    if (!this.isConnectedVisible(deleteTrigger)) {
+      deleteTrigger = queryFirstVisible<HTMLElement>(NOTEBOOKLM_SELECTORS.deleteButtons, card) ||
+        this.findButtonByHints(card, NOTEBOOKLM_SELECTORS.deleteTextHints) ||
+        undefined;
+    }
+
+    if (!deleteTrigger) {
+      const menuButton = this.findSourceActionMenuButton(card);
+      if (!menuButton) {
+        return { ok: false, reason: '削除ボタン/メニューボタンが見つかりません' };
+      }
+      menuButton.click();
+      await wait(180);
+      deleteTrigger = (await this.waitForDeleteActionInMenu(2600)) || undefined;
+    }
+
+    if (!deleteTrigger) {
+      return { ok: false, reason: '削除メニュー項目が見つかりません' };
+    }
+
+    deleteTrigger.click();
+    await wait(180);
+
+    const confirmButton = await this.waitForConfirmDeleteButton(3200);
+    if (confirmButton) {
+      confirmButton.click();
+    } else {
+      logger.warn('adapter', 'confirm button not found after delete click');
+    }
+
+    const removed = await this.waitForSourceDisappear(liveSource, 5600);
+    if (!removed) {
+      return { ok: false, reason: '削除確定後もソースが残っています' };
+    }
+
+    return { ok: true };
   }
 
   private findSourceListContainer(): HTMLElement | null {
@@ -1182,40 +1407,28 @@ export class NotebookLMAdapter {
     failures: string[];
   }> {
     const result = { success: 0, failed: 0, skipped: 0, failures: [] as string[] };
+    await this.ensureSourcesTabVisible();
+    await this.ensureSourceListVisible();
 
     for (const source of sources) {
-      const btn = source.deleteButtonEl || queryFirstVisible<HTMLElement>(NOTEBOOKLM_SELECTORS.deleteButtons, source.cardEl);
-      if (!btn) {
-        result.skipped += 1;
-        result.failures.push(`${source.title}: 削除ボタンが見つかりません`);
-        continue;
-      }
-
       if (dryRun) {
         result.skipped += 1;
         continue;
       }
 
       try {
-        btn.click();
-        await wait(220);
-
-        const confirmBtn = queryFirstVisible<HTMLElement>(NOTEBOOKLM_SELECTORS.confirmButtons) ||
-          findClickableByText(NOTEBOOKLM_SELECTORS.confirmTextHints);
-
-        if (!confirmBtn) {
+        const deleted = await this.deleteSingleSource(source);
+        if (deleted.ok) {
+          result.success += 1;
+        } else {
           result.failed += 1;
-          result.failures.push(`${source.title}: 確認ボタンが見つかりません`);
-          continue;
+          result.failures.push(`${source.title}: ${deleted.reason || '削除操作に失敗しました'}`);
         }
-
-        confirmBtn.click();
-        await wait(220);
-        result.success += 1;
       } catch (error) {
         result.failed += 1;
         result.failures.push(`${source.title}: ${(error as Error).message}`);
       }
+      await wait(180);
     }
 
     return result;
