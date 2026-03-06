@@ -212,6 +212,7 @@ async function ensureClipboardImageLoaded(): Promise<void> {
 type ImageDownloadInfo = {
   relativePath: string;
   filename: string;
+  downloadId: number;
 };
 
 async function downloadImageBackup(dataUrl: string): Promise<ImageDownloadInfo> {
@@ -227,7 +228,10 @@ async function downloadImageBackup(dataUrl: string): Promise<ImageDownloadInfo> 
   if (!response.ok) {
     throw new Error(response.error || '画像バックアップ保存に失敗しました');
   }
-  return { relativePath, filename };
+  if (typeof response.downloadId !== 'number') {
+    throw new Error('ダウンロードIDの取得に失敗しました');
+  }
+  return { relativePath, filename, downloadId: response.downloadId };
 }
 
 function formatTimestampToSecond(now: Date = new Date()): string {
@@ -254,25 +258,28 @@ function appendQuickAddTimestampMemo(memo: string, timestamp: string): string {
   return [memo, `追加日時: ${timestamp}`].filter(Boolean).join('\n');
 }
 
-function buildClipboardImageTextFallback(
-  payload: QuickAddPayload,
-  timestamp: string,
-  downloadInfo?: ImageDownloadInfo,
-  downloadErrorMessage?: string
-): string {
+async function revealDownloadedFile(downloadId: number): Promise<void> {
+  const response = await sendRuntimeMessage({
+    type: 'SHOW_DOWNLOADED_FILE',
+    payload: { downloadId }
+  });
+  if (!response.ok) {
+    throw new Error(response.error || 'ダウンロードファイル表示に失敗しました');
+  }
+}
+
+function buildClipboardImageUploadMeta(payload: QuickAddPayload, timestamp: string, downloadInfo: ImageDownloadInfo): string {
+  const presumedPath = `~/Downloads/${downloadInfo.relativePath}`;
   return [
-    `# ${payload.title || 'Clipboard Image'}`,
+    '# クリップボード画像アップロード情報',
     '',
-    '- 種別: クリップボード画像（クイック追加）',
     `- 追加日時: ${timestamp}`,
+    `- 保存先（Downloads相対パス）: ${downloadInfo.relativePath}`,
+    `- 想定フルパス: ${presumedPath}`,
+    `- 保存ファイル名: ${downloadInfo.filename}`,
     payload.sourceUrl ? `- 元ページ: ${payload.sourceUrl}` : '- 元ページ: （不明）',
-    downloadInfo ? `- 保存先（Downloads相対パス）: ${downloadInfo.relativePath}` : '- 保存先（Downloads相対パス）: （未保存）',
-    downloadInfo ? `- 保存ファイル名: ${downloadInfo.filename}` : '- 保存ファイル名: （未保存）',
-    downloadErrorMessage ? `- ダウンロードエラー: ${downloadErrorMessage}` : '- ダウンロード: 成功',
-    '- 注記: 画像本体は手動アップロードで利用してください',
-    payload.memo ? `- メモ: ${payload.memo}` : '- メモ: （なし）',
-    '',
-    payload.content ? `補足入力:\n${payload.content}` : '補足入力: （なし）'
+    payload.title ? `- タイトル: ${payload.title}` : '- タイトル: （未設定）',
+    payload.memo ? `- メモ: ${payload.memo}` : '- メモ: （なし）'
   ].join('\n');
 }
 
@@ -316,47 +323,58 @@ async function executeQuickAdd(): Promise<void> {
   }
 
   if (payload.type === 'clipboardImage') {
-    setStatus('画像をダウンロードしてメタ情報を追加中...', 'info');
-    let downloadInfo: ImageDownloadInfo | undefined;
-    let downloadError = '';
-    if (payload.imageDataUrl) {
-      try {
-        downloadInfo = await downloadImageBackup(payload.imageDataUrl);
-      } catch (error) {
-        downloadError = (error as Error).message;
-      }
-    }
-
-    const textFallbackPayload: QuickAddPayload = {
-      type: 'text',
-      title: payload.title || 'Clipboard Image Fallback',
-      memo: appendQuickAddTimestampMemo(payload.memo, timestamp),
-      content: buildClipboardImageTextFallback(payload, timestamp, downloadInfo, downloadError),
-      sourceUrl: payload.sourceUrl
-    };
-
-    const fallbackResult = await adapter.addSource(textFallbackPayload);
-    if (fallbackResult.success) {
-      if (downloadInfo) {
-        setStatus(`画像メタ情報を追加しました。画像は ${downloadInfo.relativePath} に保存済みです。`, 'success');
-      } else {
-        setStatus(`画像メタ情報を追加しましたが、画像ダウンロードは失敗しました: ${downloadError || '不明なエラー'}`, 'error');
-      }
-      hideQuickModal();
+    if (!payload.imageDataUrl) {
+      setStatus('クリップボード画像がありません。Ctrl+Vか「クリップボード画像を読み込む」を実行してください。', 'error');
       return;
     }
 
-    if (fallbackResult.fallbackText) {
-      try {
-        await navigator.clipboard.writeText(fallbackResult.fallbackText);
-        setStatus(`画像テキスト化の自動追加に失敗: ${fallbackResult.reason} 本文をクリップボードへコピーしました。`, 'error');
-      } catch {
-        setStatus(`画像テキスト化の追加失敗: ${fallbackResult.reason || '不明なエラー'}`, 'error');
-      }
+    setStatus('画像をバックアップ保存中...', 'info');
+    let downloadInfo: ImageDownloadInfo;
+    try {
+      downloadInfo = await downloadImageBackup(payload.imageDataUrl);
+    } catch (error) {
+      setStatus(`画像バックアップ保存に失敗しました: ${(error as Error).message}`, 'error');
       return;
     }
 
-    setStatus(`画像テキスト化の追加失敗: ${fallbackResult.reason || '不明なエラー'}`, 'error');
+    const memoWithTimestamp = appendQuickAddTimestampMemo(payload.memo, timestamp);
+    const metadataText = buildClipboardImageUploadMeta(
+      { ...payload, memo: memoWithTimestamp },
+      timestamp,
+      downloadInfo
+    );
+
+    let copiedMeta = false;
+    try {
+      await navigator.clipboard.writeText(metadataText);
+      copiedMeta = true;
+    } catch {
+      copiedMeta = false;
+    }
+
+    try {
+      await revealDownloadedFile(downloadInfo.downloadId);
+    } catch (error) {
+      logger.warn('content', 'failed to reveal downloaded file', error);
+    }
+
+    hideQuickModal();
+    setStatus('NotebookLMの「ファイルをアップロード」を起動中...', 'info');
+    const prepared = await adapter.prepareManualImageUpload();
+    if (prepared) {
+      const copiedLabel = copiedMeta ? ' メタデータはクリップボードにコピー済みです。' : '';
+      setStatus(
+        `画像を保存しました。表示されたファイル選択で ${downloadInfo.filename}（${downloadInfo.relativePath}）を選択してください。${copiedLabel}`,
+        'success'
+      );
+      return;
+    }
+
+    const copiedLabel = copiedMeta ? ' メタデータはクリップボードにコピー済みです。' : '';
+    setStatus(
+      `画像を保存しました。手動でソース追加を開き「ファイルをアップロード」から ${downloadInfo.relativePath} を選択してください。${copiedLabel}`,
+      'error'
+    );
     return;
   }
 

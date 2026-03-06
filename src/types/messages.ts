@@ -26,6 +26,12 @@ export type RuntimeMessage =
         filename: string;
         dataUrl: string;
       };
+    }
+  | {
+      type: 'SHOW_DOWNLOADED_FILE';
+      payload: {
+        downloadId: number;
+      };
     };
 
 export interface RuntimeResponse {

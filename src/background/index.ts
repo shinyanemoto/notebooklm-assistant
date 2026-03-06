@@ -85,6 +85,16 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResp
     return true;
   }
 
+  if (message.type === 'SHOW_DOWNLOADED_FILE') {
+    try {
+      chrome.downloads.show(message.payload.downloadId);
+      sendResponse({ ok: true });
+    } catch (error) {
+      sendResponse({ ok: false, error: (error as Error).message });
+    }
+    return true;
+  }
+
   sendResponse({ ok: false, error: 'Unhandled message type' });
   return false;
 });

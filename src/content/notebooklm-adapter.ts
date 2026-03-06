@@ -1081,9 +1081,12 @@ export class NotebookLMAdapter {
     }
 
     const activeDialog = (await this.waitForSourceDialog(1000)) ?? dialog;
-    const uploadButton = this.findButtonByHints(activeDialog, ['ファイルをアップロード', 'upload file', 'upload']);
+    const uploadButton = this.findButtonByHints(activeDialog, ['ファイルをアップロード', 'upload file', 'upload']) ||
+      findClickableByText(['ファイルをアップロード', 'upload file']);
     if (uploadButton) {
+      uploadButton.focus?.();
       uploadButton.click();
+      await wait(100);
       return true;
     }
 
