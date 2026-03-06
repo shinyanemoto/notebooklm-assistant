@@ -73,9 +73,11 @@ export const NOTEBOOKLM_SELECTORS = {
     '作成',
     '追加',
     '保存',
+    '挿入',
     '検索',
     '送信',
-    '取り込む'
+    '取り込む',
+    'insert'
   ],
 
   openSourceListButtons: [

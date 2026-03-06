@@ -258,7 +258,7 @@ export class NotebookLMAdapter {
     }
   }
 
-  private async waitForDialogClosed(timeoutMs = 2800): Promise<boolean> {
+  private async waitForDialogClosed(timeoutMs = 6000): Promise<boolean> {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
       const dialog = this.findSourceDialogContainer();
@@ -294,7 +294,7 @@ export class NotebookLMAdapter {
       const submit = this.findSubmitButton(nextDialog, null);
       if (submit) {
         submit.click();
-        return this.waitForDialogClosed(1800);
+        return this.waitForDialogClosed(5000);
       }
       return false;
     }
@@ -306,7 +306,7 @@ export class NotebookLMAdapter {
     const submit = this.findSubmitButton(nextDialog, input);
     if (!submit) return false;
     submit.click();
-    return this.waitForDialogClosed(1800);
+    return this.waitForDialogClosed(5000);
   }
 
   private makePayloadText(payload: QuickAddPayload): string {
@@ -360,12 +360,12 @@ export class NotebookLMAdapter {
     const submit = this.findSubmitButton(container, input);
     if (!submit) {
       // Some NotebookLM variants accept Enter without a visible submit button.
-      return this.waitForDialogClosed(1800);
+      return this.waitForDialogClosed(5000);
     }
 
     submit.click();
     await wait(120);
-    return this.waitForDialogClosed(1800);
+    return this.waitForDialogClosed(5000);
   }
 
   private findDeleteButtonsInDocument(): HTMLElement[] {
