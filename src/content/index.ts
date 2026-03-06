@@ -18,6 +18,13 @@ interface UiState {
   selectedIds: Set<string>;
   lastBackupIds: Set<string>;
   clipboardImageDataUrl: string | null;
+  customPrompts: CustomPrompt[];
+}
+
+interface CustomPrompt {
+  id: string;
+  title: string;
+  text: string;
 }
 
 const adapter = new NotebookLMAdapter();
@@ -31,7 +38,8 @@ const state: UiState = {
   sources: [],
   selectedIds: new Set<string>(),
   lastBackupIds: new Set<string>(),
-  clipboardImageDataUrl: null
+  clipboardImageDataUrl: null,
+  customPrompts: []
 };
 
 const ids = {
@@ -49,6 +57,7 @@ const ids = {
 
 const CHAT_EXPORT_PROMPT =
   '全ソースを内容変更することなく出して。省略せず、各ソースのタイトルと本文をそのまま列挙してください。';
+const CUSTOM_PROMPTS_STORAGE_KEY = 'nlm_custom_prompts';
 const ROLE_PROMPT_DEFAULT = `【役割定義】
 あなたは、私の業務を強力にサポートする「タスク整理エージェント：伴走くん」です。
 提供されたすべてのソース（メモ、URL、スクショ、画像）を「処理すべき生データ」として扱い、それらを構造化・整理することがあなたの使命です。
@@ -134,6 +143,128 @@ async function copyTextToClipboard(text: string): Promise<boolean> {
     return true;
   } catch {
     return false;
+  }
+}
+
+function makeCustomPromptId(): string {
+  return `cp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function sanitizeCustomPromptList(input: unknown): CustomPrompt[] {
+  if (!Array.isArray(input)) return [];
+  const list: CustomPrompt[] = [];
+  for (const item of input) {
+    if (!item || typeof item !== 'object') continue;
+    const rec = item as Record<string, unknown>;
+    const id = typeof rec.id === 'string' && rec.id ? rec.id : makeCustomPromptId();
+    const title = typeof rec.title === 'string' ? rec.title : '';
+    const text = typeof rec.text === 'string' ? rec.text : '';
+    list.push({ id, title, text });
+  }
+  return list;
+}
+
+async function loadCustomPrompts(): Promise<void> {
+  try {
+    const result = await chrome.storage.local.get(CUSTOM_PROMPTS_STORAGE_KEY);
+    state.customPrompts = sanitizeCustomPromptList(result?.[CUSTOM_PROMPTS_STORAGE_KEY]);
+  } catch (error) {
+    logger.warn('content', 'failed to load custom prompts', error);
+    state.customPrompts = [];
+  }
+}
+
+async function saveCustomPrompts(): Promise<void> {
+  try {
+    await chrome.storage.local.set({ [CUSTOM_PROMPTS_STORAGE_KEY]: state.customPrompts });
+  } catch (error) {
+    logger.warn('content', 'failed to save custom prompts', error);
+  }
+}
+
+function renderCustomPromptList(): void {
+  const root = document.getElementById('nlm-custom-prompt-list');
+  if (!root) return;
+
+  if (state.customPrompts.length === 0) {
+    root.innerHTML = '<div class="nlm-empty">追加プロンプトはまだありません。</div>';
+    return;
+  }
+
+  root.innerHTML = state.customPrompts
+    .map((prompt) => {
+      return `
+        <div class="nlm-custom-card" data-prompt-id="${esc(prompt.id)}">
+          <div class="nlm-row">
+            <label>タイトル</label>
+            <input type="text" data-field="title" value="${esc(prompt.title)}" placeholder="例: 要約用プロンプト" />
+          </div>
+          <div class="nlm-row">
+            <label>本文</label>
+            <textarea rows="6" data-field="text" placeholder="プロンプト本文を入力">${esc(prompt.text)}</textarea>
+          </div>
+          <div class="nlm-actions">
+            <button data-action="copy">コピー</button>
+            <button data-action="delete">削除</button>
+          </div>
+        </div>
+      `;
+    })
+    .join('');
+
+  for (const input of Array.from(root.querySelectorAll<HTMLInputElement>('input[data-field="title"]'))) {
+    input.addEventListener('input', (event) => {
+      const target = event.currentTarget as HTMLInputElement;
+      const card = target.closest<HTMLElement>('[data-prompt-id]');
+      const promptId = card?.dataset.promptId;
+      if (!promptId) return;
+      const idx = state.customPrompts.findIndex((item) => item.id === promptId);
+      if (idx < 0) return;
+      state.customPrompts[idx].title = target.value;
+      void saveCustomPrompts();
+    });
+  }
+
+  for (const textarea of Array.from(root.querySelectorAll<HTMLTextAreaElement>('textarea[data-field="text"]'))) {
+    textarea.addEventListener('input', (event) => {
+      const target = event.currentTarget as HTMLTextAreaElement;
+      const card = target.closest<HTMLElement>('[data-prompt-id]');
+      const promptId = card?.dataset.promptId;
+      if (!promptId) return;
+      const idx = state.customPrompts.findIndex((item) => item.id === promptId);
+      if (idx < 0) return;
+      state.customPrompts[idx].text = target.value;
+      void saveCustomPrompts();
+    });
+  }
+
+  for (const button of Array.from(root.querySelectorAll<HTMLButtonElement>('button[data-action="copy"]'))) {
+    button.addEventListener('click', async (event) => {
+      const target = event.currentTarget as HTMLButtonElement;
+      const card = target.closest<HTMLElement>('[data-prompt-id]');
+      const promptId = card?.dataset.promptId;
+      if (!promptId) return;
+      const prompt = state.customPrompts.find((item) => item.id === promptId);
+      if (!prompt || !prompt.text.trim()) {
+        setStatus('コピー対象の本文が空です。', 'error');
+        return;
+      }
+      const ok = await copyTextToClipboard(prompt.text.trim());
+      setStatus(ok ? '追加プロンプトをコピーしました。' : 'コピーに失敗しました。', ok ? 'success' : 'error');
+    });
+  }
+
+  for (const button of Array.from(root.querySelectorAll<HTMLButtonElement>('button[data-action="delete"]'))) {
+    button.addEventListener('click', (event) => {
+      const target = event.currentTarget as HTMLButtonElement;
+      const card = target.closest<HTMLElement>('[data-prompt-id]');
+      const promptId = card?.dataset.promptId;
+      if (!promptId) return;
+      state.customPrompts = state.customPrompts.filter((item) => item.id !== promptId);
+      void saveCustomPrompts();
+      renderCustomPromptList();
+      setStatus('追加プロンプトを削除しました。', 'info');
+    });
   }
 }
 
@@ -908,6 +1039,7 @@ function hideQuickModal(): void {
 
 function showManagerModal(): void {
   getById<HTMLDivElement>(ids.managerModal).style.display = 'flex';
+  renderCustomPromptList();
 }
 
 function hideManagerModal(): void {
@@ -946,6 +1078,7 @@ function injectStyles(): void {
     #nlm-qa-clear-image { display: none; }
     .nlm-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .nlm-note { font-size: 12px; color: #4b5563; }
+    .nlm-custom-card { border: 1px solid #ddd; border-radius: 8px; padding: 8px; margin-bottom: 10px; background: #fafafa; }
     @media (max-width: 800px) { .nlm-grid-2 { grid-template-columns: 1fr; } .nlm-panel { width: 95vw; } }
   `;
   document.head.appendChild(style);
@@ -957,7 +1090,7 @@ function renderShell(): void {
   root.innerHTML = `
     <div id="${ids.fabWrap}" class="nlm-fab-wrap">
       <button id="nlm-open-quick" class="nlm-fab">クイック追加</button>
-      <button id="nlm-open-manager" class="nlm-fab secondary">整理/統合</button>
+      <button id="nlm-open-manager" class="nlm-fab secondary">その他</button>
     </div>
 
     <div id="${ids.quickModal}" class="nlm-modal">
@@ -997,7 +1130,7 @@ function renderShell(): void {
 
     <div id="${ids.managerModal}" class="nlm-modal">
       <div class="nlm-panel">
-        <h2>整理/統合（新UI）</h2>
+        <h2>その他</h2>
 
         <div class="nlm-row">
           <label>テンプレプロンプト: 全ソースエクスポート</label>
@@ -1013,6 +1146,14 @@ function renderShell(): void {
           <div class="nlm-actions">
             <button id="nlm-copy-template-role" class="primary">伴走くんプロンプトをコピー</button>
           </div>
+        </div>
+
+        <div class="nlm-row">
+          <label>追加プロンプト（追加/削除可能）</label>
+          <div class="nlm-actions">
+            <button id="nlm-add-custom-prompt">プロンプト枠を追加</button>
+          </div>
+          <div id="nlm-custom-prompt-list"></div>
         </div>
 
         <div class="nlm-grid-2">
@@ -1126,6 +1267,18 @@ function bindEvents(): void {
     setStatus(ok ? '伴走くんテンプレをコピーしました。' : 'コピーに失敗しました。', ok ? 'success' : 'error');
   });
 
+  getById<HTMLButtonElement>('nlm-add-custom-prompt').addEventListener('click', () => {
+    const nextIndex = state.customPrompts.length + 1;
+    state.customPrompts.push({
+      id: makeCustomPromptId(),
+      title: `追加プロンプト${nextIndex}`,
+      text: ''
+    });
+    void saveCustomPrompts();
+    renderCustomPromptList();
+    setStatus('追加プロンプト枠を追加しました。', 'success');
+  });
+
   getById<HTMLButtonElement>('nlm-summary-copy').addEventListener('click', async () => {
     const text = getById<HTMLTextAreaElement>('nlm-summary-text').value.trim();
     if (!text) {
@@ -1206,6 +1359,7 @@ async function init(): Promise<void> {
   }
 
   state.settings = await getSettings();
+  await loadCustomPrompts();
   logger.setEnabled(state.settings.enableDevLogs);
 
   injectStyles();
@@ -1213,6 +1367,7 @@ async function init(): Promise<void> {
   bindEvents();
   registerMessageHandler();
   updateImagePreview();
+  renderCustomPromptList();
   setStatus('待機中', 'info');
   setupFabAutoPosition();
   logger.info('content', 'NotebookLM assistant initialized');
