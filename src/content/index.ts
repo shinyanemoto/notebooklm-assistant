@@ -540,6 +540,7 @@ async function backupAllSourcesAsRawSingleFile(): Promise<void> {
   });
 
   const filename = withPrefix(state.settings.backupPathPrefix, buildRawBundleFilename());
+  setStatus(`単一バックアップを書き出し中... 対象 ${targets.length}件`, 'info');
   const response = await sendRuntimeMessage({
     type: 'DOWNLOAD_MARKDOWN',
     payload: {

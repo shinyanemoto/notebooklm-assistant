@@ -1195,11 +1195,42 @@ export class NotebookLMAdapter {
     return hints.some((hint) => normalized.includes(hint)) && text.length < 320;
   }
 
+  private clickExpandButtonsInCard(card: HTMLElement): void {
+    const hints = ['もっと見る', '全文', '続き', '展開', 'show more', 'read more', 'expand', 'more'];
+    const buttons = Array.from(card.querySelectorAll<HTMLElement>('button, [role="button"]'))
+      .filter((node) => isVisible(node))
+      .filter((node) => {
+        const label = (node.innerText || node.getAttribute('aria-label') || '').trim().toLowerCase();
+        if (!label) return false;
+        return hints.some((hint) => label.includes(hint.toLowerCase()));
+      });
+
+    for (const button of buttons) {
+      try {
+        button.click();
+      } catch {
+        // no-op
+      }
+    }
+  }
+
   private extractSourceDetailText(source: SourceRecord): string {
     const titleKey = this.normalizeSourceKey(source.title);
     const sourceListContainer = this.findSourceListContainer();
     const cardRect = source.cardEl.getBoundingClientRect();
     let best: { score: number; text: string } | null = null;
+
+    const cardText = this.cleanExtractedBody(readElementText(source.cardEl));
+    if (cardText.length >= 80 && !this.looksLikeUiOnlyText(cardText)) {
+      let cardScore = 35;
+      const normalizedCard = this.normalizeSourceKey(cardText);
+      if (titleKey && normalizedCard.includes(titleKey)) cardScore += 10;
+      if (source.body) {
+        const bodySeed = this.normalizeSourceKey(source.body).slice(0, 36);
+        if (bodySeed && normalizedCard.includes(bodySeed)) cardScore += 6;
+      }
+      best = { score: cardScore, text: cardText };
+    }
 
     const candidates = queryAllDeep<HTMLElement>(
       document,
@@ -1209,8 +1240,11 @@ export class NotebookLMAdapter {
     for (const node of candidates) {
       if (isAssistantUiNode(node)) continue;
       if (!isVisible(node)) continue;
-      if (node === source.cardEl || source.cardEl.contains(node)) continue;
-      if (sourceListContainer && (node === sourceListContainer || sourceListContainer.contains(node))) continue;
+
+      const isCardOrDescendant = node === source.cardEl || source.cardEl.contains(node);
+      if (sourceListContainer && (node === sourceListContainer || sourceListContainer.contains(node)) && !isCardOrDescendant) {
+        continue;
+      }
 
       const text = this.cleanExtractedBody(readElementText(node));
       if (text.length < 80) continue;
@@ -1225,6 +1259,7 @@ export class NotebookLMAdapter {
         const bodySeed = this.normalizeSourceKey(source.body).slice(0, 36);
         if (bodySeed && normalized.includes(bodySeed)) score += 8;
       }
+      if (isCardOrDescendant) score += 14;
 
       if (node.matches('[role="dialog"], [aria-modal="true"]')) score += 24;
 
@@ -1618,7 +1653,9 @@ export class NotebookLMAdapter {
       if (this.isConnectedVisible(card)) {
         this.revealSourceCardActions(card);
         card.click();
-        await wait(240);
+        await wait(180);
+        this.clickExpandButtonsInCard(card);
+        await wait(180);
       }
 
       const detailText = this.extractSourceDetailText(live);
