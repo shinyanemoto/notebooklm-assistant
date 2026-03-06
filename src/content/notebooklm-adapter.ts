@@ -1679,6 +1679,228 @@ export class NotebookLMAdapter {
     return { ready: true, container };
   }
 
+  private async ensureChatTabVisible(): Promise<void> {
+    const chatTab = findClickableByText(['チャット', 'chat']);
+    if (!chatTab) return;
+    chatTab.click();
+    await wait(220);
+  }
+
+  private isInsideSourceDialog(el: HTMLElement): boolean {
+    const dialog = this.findSourceDialogContainer();
+    if (!dialog) return false;
+    return isNodeInside(el, dialog);
+  }
+
+  private composerFieldText(el: Element): string {
+    return [
+      (el.getAttribute('placeholder') || '').trim(),
+      (el.getAttribute('aria-label') || '').trim(),
+      (el.getAttribute('data-placeholder') || '').trim(),
+      readElementText(el)
+    ].join(' ').toLowerCase();
+  }
+
+  private findChatComposer(): HTMLTextAreaElement | HTMLInputElement | HTMLElement | null {
+    const candidates = queryAllDeep<HTMLElement>(document, NOTEBOOKLM_SELECTORS.chatComposerFields.join(','))
+      .filter((node) => !isAssistantUiNode(node))
+      .filter((node) => !this.isInsideSourceDialog(node))
+      .filter((node) => isVisible(node))
+      .filter((node) => {
+        if (node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement) {
+          return !node.disabled && !node.readOnly;
+        }
+        return true;
+      });
+
+    let best: { score: number; node: HTMLTextAreaElement | HTMLInputElement | HTMLElement } | null = null;
+    for (const node of candidates) {
+      const rect = node.getBoundingClientRect();
+      if (rect.width < 160 || rect.height < 18) continue;
+
+      const text = this.composerFieldText(node);
+      if (this.isWebSearchInput(node)) continue;
+
+      let score = rect.bottom;
+      if (NOTEBOOKLM_SELECTORS.chatComposerHints.some((hint) => text.includes(hint.toLowerCase()))) {
+        score += 2000;
+      }
+      if (node instanceof HTMLTextAreaElement) score += 240;
+      if (node.getAttribute('contenteditable') === 'true') score += 140;
+      if (node.getAttribute('role') === 'textbox') score += 120;
+      if (rect.width > window.innerWidth * 0.45) score += 200;
+
+      if (!best || score > best.score) {
+        best = { score, node };
+      }
+    }
+    return best?.node ?? null;
+  }
+
+  private setComposerValue(
+    composer: HTMLTextAreaElement | HTMLInputElement | HTMLElement,
+    value: string
+  ): void {
+    if (composer instanceof HTMLTextAreaElement || composer instanceof HTMLInputElement) {
+      setInputValue(composer, value);
+      return;
+    }
+    composer.focus();
+    composer.textContent = value;
+    composer.dispatchEvent(new Event('input', { bubbles: true }));
+    composer.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  private isButtonDisabled(button: HTMLElement): boolean {
+    if ((button as HTMLButtonElement).disabled) return true;
+    const ariaDisabled = (button.getAttribute('aria-disabled') || '').toLowerCase();
+    if (ariaDisabled === 'true') return true;
+    return false;
+  }
+
+  private findSendButtonForComposer(
+    composer: HTMLTextAreaElement | HTMLInputElement | HTMLElement
+  ): HTMLElement | null {
+    const explicit = queryAllDeep<HTMLElement>(document, NOTEBOOKLM_SELECTORS.chatSendButtons.join(','))
+      .filter((button) => !isAssistantUiNode(button))
+      .filter((button) => !this.isInsideSourceDialog(button))
+      .filter((button) => isVisible(button))
+      .filter((button) => !this.isButtonDisabled(button));
+
+    const hinted = this.findButtons(document)
+      .filter((button) => !isAssistantUiNode(button))
+      .filter((button) => !this.isInsideSourceDialog(button))
+      .filter((button) => !this.isButtonDisabled(button))
+      .filter((button) => {
+        const label = `${button.innerText || ''} ${button.getAttribute('aria-label') || ''}`.toLowerCase();
+        return NOTEBOOKLM_SELECTORS.chatSendTextHints.some((hint) => label.includes(hint.toLowerCase()));
+      });
+
+    const buttons = [...explicit, ...hinted];
+    if (buttons.length === 0) return null;
+
+    const composerRect = composer.getBoundingClientRect();
+    let best: { score: number; node: HTMLElement } | null = null;
+    for (const button of buttons) {
+      const rect = button.getBoundingClientRect();
+      let score = 0;
+      const verticalDistance = Math.abs(rect.top - composerRect.top);
+      const horizontalDistance = Math.abs(rect.left - composerRect.right);
+      score -= verticalDistance * 2;
+      score -= horizontalDistance;
+      if (rect.left >= composerRect.left) score += 40;
+      if (verticalDistance < 120) score += 80;
+      if (!button.innerText.trim() && (button.querySelector('svg') || button.querySelector('[data-icon]'))) {
+        score += 20;
+      }
+      if (!best || score > best.score) {
+        best = { score, node: button };
+      }
+    }
+    return best?.node ?? null;
+  }
+
+  private triggerComposerEnter(
+    composer: HTMLTextAreaElement | HTMLInputElement | HTMLElement
+  ): void {
+    composer.focus();
+    const events: Array<'keydown' | 'keypress' | 'keyup'> = ['keydown', 'keypress', 'keyup'];
+    for (const eventName of events) {
+      composer.dispatchEvent(
+        new KeyboardEvent(eventName, {
+          key: 'Enter',
+          code: 'Enter',
+          keyCode: 13,
+          which: 13,
+          bubbles: true,
+          cancelable: true
+        })
+      );
+    }
+  }
+
+  private collectAssistantMessageContainers(): HTMLElement[] {
+    const preferred: HTMLElement[] = [];
+    const fallback: HTMLElement[] = [];
+    const hasActionHint = (text: string): boolean =>
+      NOTEBOOKLM_SELECTORS.assistantMessageActionHints.some((hint) => text.toLowerCase().includes(hint.toLowerCase()));
+
+    for (const selector of NOTEBOOKLM_SELECTORS.assistantMessageContainers) {
+      for (const node of queryAllDeep<HTMLElement>(document, selector)) {
+        if (isAssistantUiNode(node)) continue;
+        if (!isVisible(node)) continue;
+        if (this.isInsideSourceDialog(node)) continue;
+
+        const rect = node.getBoundingClientRect();
+        if (rect.width < 220 || rect.height < 32) continue;
+
+        const text = this.cleanExtractedBody(readElementText(node));
+        if (text.length < 40) continue;
+        if (isLikelySourceControlText(text)) continue;
+        if (containsAny(text, ['ソースを追加', 'ウェブで新しいソースを検索', 'またはファイルをドロップ'])) continue;
+
+        if (hasActionHint(text)) {
+          preferred.push(node);
+        } else if (text.length >= 120 && rect.left < window.innerWidth * 0.82) {
+          fallback.push(node);
+        }
+      }
+    }
+
+    const primary = preferred.length > 0 ? preferred : fallback;
+    return this.compactCardCandidates(primary);
+  }
+
+  private findLatestAssistantMessageText(): string {
+    const candidates = this.collectAssistantMessageContainers();
+    if (candidates.length === 0) return '';
+
+    let latest: HTMLElement | null = null;
+    for (const node of candidates) {
+      if (!latest || node.getBoundingClientRect().bottom > latest.getBoundingClientRect().bottom) {
+        latest = node;
+      }
+    }
+
+    if (!latest) return '';
+    return this.cleanExtractedBody(readElementText(latest));
+  }
+
+  private messageSignature(text: string): string {
+    const normalized = this.normalizeSourceKey(text);
+    return `${normalized.length}:${normalized.slice(0, 240)}`;
+  }
+
+  private async waitForLatestAssistantResponse(baseSignature: string, timeoutMs: number): Promise<string> {
+    const start = Date.now();
+    let stableCount = 0;
+    let lastSignature = '';
+    let lastText = '';
+
+    while (Date.now() - start < timeoutMs) {
+      const text = this.findLatestAssistantMessageText();
+      if (text.length >= 60) {
+        const signature = this.messageSignature(text);
+        if (signature !== baseSignature) {
+          if (signature === lastSignature) {
+            stableCount += 1;
+          } else {
+            stableCount = 1;
+            lastSignature = signature;
+            lastText = text;
+          }
+
+          if (stableCount >= 3) {
+            return text;
+          }
+        }
+      }
+      await wait(700);
+    }
+
+    return lastText;
+  }
+
   async addSource(payload: QuickAddPayload): Promise<{ success: boolean; reason?: string; fallbackText?: string }> {
     if (!this.isNotebookLMPage()) {
       return { success: false, reason: 'NotebookLMページではありません。' };
@@ -1713,6 +1935,55 @@ export class NotebookLMAdapter {
     }
 
     return { success: true };
+  }
+
+  async exportAllSourcesViaChat(
+    prompt: string,
+    timeoutMs = 90000
+  ): Promise<{ success: boolean; reason?: string; fallbackText?: string; responseText?: string }> {
+    if (!this.isNotebookLMPage()) {
+      return { success: false, reason: 'NotebookLMページではありません。', fallbackText: prompt };
+    }
+    if (!this.isNotebookDocumentPage()) {
+      return {
+        success: false,
+        reason: 'ノートブック画面ではありません。ノートブックを開いてから実行してください。',
+        fallbackText: prompt
+      };
+    }
+
+    this.closeSourceDialog();
+    await wait(120);
+    await this.ensureChatTabVisible();
+
+    const composer = this.findChatComposer();
+    if (!composer) {
+      return { success: false, reason: 'チャット入力欄を検出できませんでした。', fallbackText: prompt };
+    }
+
+    const baseText = this.findLatestAssistantMessageText();
+    const baseSignature = this.messageSignature(baseText);
+
+    this.setComposerValue(composer, prompt);
+    await wait(40);
+
+    const sendButton = this.findSendButtonForComposer(composer);
+    if (sendButton) {
+      sendButton.click();
+    } else {
+      this.triggerComposerEnter(composer);
+    }
+
+    const responseText = await this.waitForLatestAssistantResponse(baseSignature, timeoutMs);
+    if (!responseText) {
+      return {
+        success: false,
+        reason: 'NotebookLMの最終回答を取得できませんでした。',
+        fallbackText: prompt
+      };
+    }
+
+    return { success: true, responseText };
   }
 
   async openSourceDialog(): Promise<boolean> {

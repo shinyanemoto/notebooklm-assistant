@@ -1,9 +1,9 @@
 import {
   buildBackupFilename,
+  buildChatExportFilename,
   buildImageFilename,
-  buildRawBundleFilename,
   createBackupMarkdown,
-  createRawBundleMarkdown
+  createChatExportMarkdown
 } from '../backup/backup';
 import { logger } from '../lib/logger';
 import { getSettings } from '../lib/storage';
@@ -46,6 +46,9 @@ const ids = {
   dryRun: 'nlm-dry-run',
   backupInfo: 'nlm-backup-info'
 };
+
+const CHAT_EXPORT_PROMPT =
+  '全ソースを内容変更することなく出して。省略せず、各ソースのタイトルと本文をそのまま列挙してください。';
 
 function esc(text: string): string {
   return text
@@ -518,31 +521,33 @@ async function createBackup(mode: 'before-delete' | 'before-merge' | 'manual', t
 }
 
 async function backupAllSourcesAsRawSingleFile(): Promise<void> {
-  const baseSources = state.sources.length > 0 ? [...state.sources] : dedupeSources(await adapter.scanSources());
-  if (baseSources.length === 0) {
-    setStatus('バックアップ対象ソースが見つかりません。', 'error');
+  setStatus('チャットへ全ソース出力プロンプトを送信中...', 'info');
+  const exportResult = await adapter.exportAllSourcesViaChat(CHAT_EXPORT_PROMPT);
+  if (!exportResult.success || !exportResult.responseText) {
+    if (exportResult.fallbackText) {
+      try {
+        await navigator.clipboard.writeText(exportResult.fallbackText);
+        setStatus(
+          `チャット自動送信失敗: ${exportResult.reason || '不明なエラー'} 定型プロンプトをクリップボードにコピーしました。`,
+          'error'
+        );
+      } catch {
+        setStatus(`チャット自動送信失敗: ${exportResult.reason || '不明なエラー'}`, 'error');
+      }
+      return;
+    }
+    setStatus(`チャット自動送信失敗: ${exportResult.reason || '不明なエラー'}`, 'error');
     return;
   }
 
-  setStatus(`全ソースを詳細抽出中... 対象 ${baseSources.length}件`, 'info');
-  const detailed = await adapter.enrichSourcesWithDetails(baseSources);
-  const targets = detailed.map((source) => ({
-    ...source,
-    body: source.body.trim()
-  }));
-
-  state.sources = targets;
-  state.selectedIds = new Set(targets.map((s) => s.id));
-  renderSourceList();
-
-  const markdown = createRawBundleMarkdown({
-    mode: 'manual',
+  const markdown = createChatExportMarkdown({
     projectName: adapter.getProjectName(),
-    sources: targets
+    prompt: CHAT_EXPORT_PROMPT,
+    responseText: exportResult.responseText
   });
+  const filename = withPrefix(state.settings.backupPathPrefix, buildChatExportFilename());
 
-  const filename = withPrefix(state.settings.backupPathPrefix, buildRawBundleFilename());
-  setStatus(`単一バックアップを書き出し中... 対象 ${targets.length}件`, 'info');
+  setStatus('チャット最終回答をMarkdown保存中...', 'info');
   const response = await sendRuntimeMessage({
     type: 'DOWNLOAD_MARKDOWN',
     payload: {
@@ -550,17 +555,22 @@ async function backupAllSourcesAsRawSingleFile(): Promise<void> {
       content: markdown
     }
   });
-
   if (!response.ok) {
-    setStatus(`全ソースバックアップ失敗: ${response.error || '不明なエラー'}`, 'error');
+    try {
+      await navigator.clipboard.writeText(exportResult.responseText);
+      setStatus(`保存失敗: ${response.error || '不明なエラー'} 最終回答本文をクリップボードへコピーしました。`, 'error');
+    } catch {
+      setStatus(`保存失敗: ${response.error || '不明なエラー'}`, 'error');
+    }
     return;
   }
 
-  state.lastBackupIds = new Set(targets.map((t) => t.id));
-  getById<HTMLDivElement>(ids.backupInfo).textContent = `最新バックアップ対象: 全${targets.length}件（内容改変なし）`;
+  if (state.sources.length > 0) {
+    state.lastBackupIds = new Set(state.sources.map((source) => source.id));
+  }
+  getById<HTMLDivElement>(ids.backupInfo).textContent = '最新バックアップ対象: チャット経由全ソース出力';
   updateDeleteButtonState();
-  const extractedCount = targets.filter((t) => t.body.length > 0).length;
-  setStatus(`全ソース単一バックアップ保存完了: ${filename}（本文取得 ${extractedCount}/${targets.length}件）`, 'success');
+  setStatus(`チャット経由バックアップ保存完了: ${filename}`, 'success');
 }
 
 async function previewMerge(): Promise<void> {
@@ -977,7 +987,7 @@ function renderShell(): void {
 
         <div class="nlm-actions">
           <button id="nlm-backup-selected">選択ソースをバックアップ</button>
-          <button id="nlm-backup-all-raw">全ソースを1ファイルでバックアップ（内容改変なし）</button>
+          <button id="nlm-backup-all-raw">チャット経由で全ソース出力→MD保存</button>
           <button id="nlm-preview-merge">統合プレビュー生成</button>
           <button id="nlm-add-merged" class="primary">統合ソースを追加（事前バックアップ付き）</button>
           <button id="nlm-export-merged-file">統合をMD保存→ファイル追加導線</button>

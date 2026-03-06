@@ -1,14 +1,22 @@
 import type { BackupRequest } from '../types/models';
 
-function formatDateParts(date: Date): { stamp: string; display: string } {
+function formatDateParts(date: Date): {
+  stamp: string;
+  stampSecond: string;
+  display: string;
+  displaySecond: string;
+} {
   const yyyy = date.getFullYear();
   const mm = `${date.getMonth() + 1}`.padStart(2, '0');
   const dd = `${date.getDate()}`.padStart(2, '0');
   const hh = `${date.getHours()}`.padStart(2, '0');
   const mi = `${date.getMinutes()}`.padStart(2, '0');
+  const ss = `${date.getSeconds()}`.padStart(2, '0');
   return {
     stamp: `${yyyy}${mm}${dd}_${hh}${mi}`,
-    display: `${yyyy}-${mm}-${dd} ${hh}:${mi}`
+    stampSecond: `${yyyy}${mm}${dd}_${hh}${mi}${ss}`,
+    display: `${yyyy}-${mm}-${dd} ${hh}:${mi}`,
+    displaySecond: `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`
   };
 }
 
@@ -23,6 +31,11 @@ export function buildBackupFilename(kind: 'backup' | 'merge_backup', now: Date =
 export function buildRawBundleFilename(now: Date = new Date()): string {
   const { stamp } = formatDateParts(now);
   return `notebooklm_raw_bundle_${stamp}.md`;
+}
+
+export function buildChatExportFilename(now: Date = new Date()): string {
+  const { stampSecond } = formatDateParts(now);
+  return `notebooklm_chat_export_${stampSecond}.md`;
 }
 
 export function buildImageFilename(now: Date = new Date()): string {
@@ -96,5 +109,34 @@ export function createRawBundleMarkdown(request: BackupRequest, now: Date = new 
     '',
     '## ソース本文（生データ）',
     blocks || '（本文なし）'
+  ].join('\n');
+}
+
+export function createChatExportMarkdown(input: {
+  projectName: string;
+  prompt: string;
+  responseText: string;
+  now?: Date;
+}): string {
+  const now = input.now ?? new Date();
+  const { displaySecond } = formatDateParts(now);
+  return [
+    '# NotebookLM チャット経由 全ソースエクスポート',
+    '',
+    `- エクスポート日時: ${displaySecond}`,
+    `- プロジェクト: ${input.projectName}`,
+    '- 方式: チャットへ定型プロンプト送信 → 最終回答を保存',
+    '',
+    '## 送信プロンプト',
+    '',
+    '```text',
+    input.prompt.trim(),
+    '```',
+    '',
+    '## NotebookLM 最終回答（原文）',
+    '',
+    '```markdown',
+    input.responseText.trim(),
+    '```'
   ].join('\n');
 }

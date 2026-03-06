@@ -51,6 +51,34 @@ export const NOTEBOOKLM_SELECTORS = {
     'input[placeholder*="http"]',
     'input[placeholder*="URL"]'
   ],
+  chatComposerFields: [
+    'textarea',
+    'div[role="textbox"][contenteditable="true"]',
+    '[contenteditable="true"][role="textbox"]',
+    '[contenteditable="true"]'
+  ],
+  chatComposerHints: [
+    '入力を開始します',
+    'start typing',
+    'message',
+    'chat',
+    'ask'
+  ],
+  chatSendButtons: [
+    'button[aria-label*="送信"]',
+    'button[aria-label*="Send"]',
+    'button[data-testid*="send"]',
+    'button[type="submit"]'
+  ],
+  chatSendTextHints: ['送信', 'send', '送る'],
+  assistantMessageContainers: [
+    'article',
+    '[role="article"]',
+    '[data-testid*="message"]',
+    '[class*="message"]',
+    '[class*="response"]'
+  ],
+  assistantMessageActionHints: ['メモに保存', 'save to note', 'thumb_up', 'thumb_down', 'copy_all'],
   submitSourceButtons: [
     'button[data-testid*="create"]',
     'button[data-testid*="add"]',
