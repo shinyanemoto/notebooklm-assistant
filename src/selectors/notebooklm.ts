@@ -18,10 +18,25 @@ export const NOTEBOOKLM_SELECTORS = {
     '[class*="sourceModal"]'
   ],
   sourceDialogTextHints: ['add source', 'add sources', 'ソースを追加', '新しいソース'],
+  sourceModeButtons: [
+    'button[data-testid*="source-type"]',
+    'button[data-testid*="import-type"]',
+    'button[aria-label*="コピーしたテキスト"]',
+    'button[aria-label*="ウェブサイト"]',
+    'button[aria-label*="website"]',
+    'button[aria-label*="text"]'
+  ],
+  sourceModeTextHints: {
+    text: ['コピーしたテキスト', '貼り付けテキスト', 'paste text', 'pasted text', 'text'],
+    url: ['ウェブサイト', 'website', 'url', 'link', 'リンク'],
+    file: ['ファイル', 'file', 'upload']
+  },
+  webSearchInputHints: ['ウェブで新しいソースを検索', 'search web', 'web search'],
 
   sourceInputFields: [
     'textarea',
     '[contenteditable="true"]',
+    'input[type="text"]',
     'input[type="url"]',
     'input[placeholder*="http"]',
     'input[placeholder*="URL"]'

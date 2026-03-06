@@ -23,6 +23,12 @@ function containsAny(text: string, hints: string[]): boolean {
   return hints.some((hint) => target.includes(hint.toLowerCase()));
 }
 
+function isVisible(el: HTMLElement): boolean {
+  const rect = el.getBoundingClientRect();
+  const style = window.getComputedStyle(el);
+  return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+}
+
 export class NotebookLMAdapter {
   isNotebookLMPage(): boolean {
     return location.hostname.includes('notebooklm.google.com');
@@ -45,6 +51,7 @@ export class NotebookLMAdapter {
     for (const selector of NOTEBOOKLM_SELECTORS.sourceDialogContainers) {
       const containers = Array.from(document.querySelectorAll<HTMLElement>(selector));
       for (const container of containers) {
+        if (!isVisible(container)) continue;
         const text = readElementText(container);
         if (containsAny(text, NOTEBOOKLM_SELECTORS.sourceDialogTextHints)) {
           return container;
@@ -54,24 +61,223 @@ export class NotebookLMAdapter {
     return null;
   }
 
-  private findSourceInput(container: ParentNode): HTMLTextAreaElement | HTMLInputElement | HTMLElement | null {
-    const input = queryFirstVisible<HTMLElement>(NOTEBOOKLM_SELECTORS.sourceInputFields, container);
-    return input;
+  private async waitForSourceDialog(timeoutMs = 3000): Promise<HTMLElement | null> {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const dialog = this.findSourceDialogContainer();
+      if (dialog) return dialog;
+      await wait(120);
+    }
+    return null;
   }
 
-  private findSubmitButton(container: ParentNode): HTMLElement | null {
-    const button = queryFirstVisible<HTMLElement>(NOTEBOOKLM_SELECTORS.submitSourceButtons, container);
-    if (button) return button;
+  private findButtons(container: ParentNode): HTMLElement[] {
+    const items = new Set<HTMLElement>();
 
-    const candidates = Array.from(container.querySelectorAll<HTMLElement>('button, [role="button"]'));
-    for (const candidate of candidates) {
-      const label = (candidate.innerText || candidate.getAttribute('aria-label') || '').trim();
+    for (const selector of NOTEBOOKLM_SELECTORS.sourceModeButtons) {
+      for (const node of Array.from(container.querySelectorAll<HTMLElement>(selector))) {
+        if (isVisible(node)) items.add(node);
+      }
+    }
+
+    for (const node of Array.from(container.querySelectorAll<HTMLElement>('button, [role="button"]'))) {
+      if (isVisible(node)) items.add(node);
+    }
+
+    return Array.from(items);
+  }
+
+  private findButtonByHints(container: ParentNode, hints: string[]): HTMLElement | null {
+    const buttons = this.findButtons(container);
+    for (const button of buttons) {
+      const label = (button.innerText || button.getAttribute('aria-label') || '').trim();
       if (!label) continue;
-      if (containsAny(label, NOTEBOOKLM_SELECTORS.submitSourceTextHints)) {
-        return candidate;
+      if (containsAny(label, hints)) {
+        return button;
       }
     }
     return null;
+  }
+
+  private fieldText(el: Element): string {
+    return [
+      (el.getAttribute('placeholder') || '').trim(),
+      (el.getAttribute('aria-label') || '').trim(),
+      readElementText(el)
+    ].join(' ');
+  }
+
+  private isWebSearchInput(el: Element): boolean {
+    const text = this.fieldText(el);
+    return containsAny(text, NOTEBOOKLM_SELECTORS.webSearchInputHints);
+  }
+
+  private findBestInput(container: ParentNode, type: QuickAddPayload['type']): HTMLTextAreaElement | HTMLInputElement | HTMLElement | null {
+    const candidates = Array.from(container.querySelectorAll<HTMLElement>(NOTEBOOKLM_SELECTORS.sourceInputFields.join(',')))
+      .filter((el) => isVisible(el as HTMLElement));
+
+    if (candidates.length === 0) return null;
+
+    if (type === 'url') {
+      for (const candidate of candidates) {
+        if (this.isWebSearchInput(candidate)) continue;
+        if (candidate instanceof HTMLInputElement && candidate.type === 'url') return candidate;
+        const text = this.fieldText(candidate);
+        if (containsAny(text, ['url', 'リンク', 'link', 'website', 'ウェブサイト', 'http'])) {
+          return candidate;
+        }
+      }
+
+      // Last fallback: web search style input can still resolve URL source in some NotebookLM builds.
+      for (const candidate of candidates) {
+        if (candidate instanceof HTMLInputElement) return candidate;
+      }
+      return candidates[0];
+    }
+
+    for (const candidate of candidates) {
+      if (this.isWebSearchInput(candidate)) continue;
+      if (candidate instanceof HTMLTextAreaElement) return candidate;
+      if (candidate.getAttribute('contenteditable') === 'true') return candidate;
+    }
+
+    for (const candidate of candidates) {
+      if (!this.isWebSearchInput(candidate)) return candidate;
+    }
+
+    return null;
+  }
+
+  private setElementValue(input: HTMLTextAreaElement | HTMLInputElement | HTMLElement, value: string): void {
+    if (input instanceof HTMLTextAreaElement || input instanceof HTMLInputElement) {
+      setInputValue(input, value);
+      return;
+    }
+
+    input.focus();
+    input.textContent = value;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  private findSubmitButton(container: ParentNode): HTMLElement | null {
+    const selectorHit = queryFirstVisible<HTMLElement>(NOTEBOOKLM_SELECTORS.submitSourceButtons, container);
+    if (selectorHit) return selectorHit;
+
+    const byText = this.findButtonByHints(container, [
+      ...NOTEBOOKLM_SELECTORS.submitSourceTextHints,
+      '完了',
+      '取り込む',
+      'import',
+      'done'
+    ]);
+    if (byText) return byText;
+
+    const buttons = this.findButtons(container).filter((button) => !(button as HTMLButtonElement).disabled);
+    if (buttons.length === 1) return buttons[0];
+
+    return null;
+  }
+
+  private async selectSourceMode(container: HTMLElement, type: QuickAddPayload['type']): Promise<HTMLElement> {
+    const hints = type === 'url'
+      ? NOTEBOOKLM_SELECTORS.sourceModeTextHints.url
+      : NOTEBOOKLM_SELECTORS.sourceModeTextHints.text;
+
+    const modeButton = this.findButtonByHints(container, hints);
+    if (modeButton) {
+      modeButton.click();
+      await wait(260);
+      const maybeNew = await this.waitForSourceDialog(1200);
+      if (maybeNew) return maybeNew;
+    }
+    return container;
+  }
+
+  private async tryClipboardTextImport(container: HTMLElement, text: string): Promise<boolean> {
+    const modeButton = this.findButtonByHints(container, NOTEBOOKLM_SELECTORS.sourceModeTextHints.text);
+    if (!modeButton) return false;
+
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+      }
+    } catch (error) {
+      logger.warn('adapter', 'clipboard write failed', error);
+    }
+
+    modeButton.click();
+    await wait(300);
+
+    const nextDialog = await this.waitForSourceDialog(1400);
+    if (!nextDialog) {
+      return true;
+    }
+
+    const input = this.findBestInput(nextDialog, 'text');
+    if (!input) {
+      const submit = this.findSubmitButton(nextDialog);
+      if (submit) {
+        submit.click();
+        return true;
+      }
+      return false;
+    }
+
+    this.setElementValue(input, text);
+    await wait(120);
+    const submit = this.findSubmitButton(nextDialog);
+    if (!submit) return false;
+    submit.click();
+    return true;
+  }
+
+  private makePayloadText(payload: QuickAddPayload): string {
+    if (payload.type === 'url') {
+      return payload.content;
+    }
+
+    if (payload.type === 'clipboardImage') {
+      return [
+        `# ${payload.title || 'Clipboard Image'}`,
+        '',
+        '- 種別: クリップボード画像',
+        payload.sourceUrl ? `- 元ページ: ${payload.sourceUrl}` : '- 元ページ: （不明）',
+        '- 注記: 画像本体はローカルバックアップに保存',
+        '',
+        payload.memo ? `メモ: ${payload.memo}` : 'メモ: （なし）'
+      ].join('\n');
+    }
+
+    return [
+      `# ${payload.title || 'Text Source'}`,
+      '',
+      payload.content,
+      payload.memo ? `\nメモ: ${payload.memo}` : ''
+    ].join('\n');
+  }
+
+  private async fillInputAndSubmit(container: HTMLElement, payload: QuickAddPayload): Promise<boolean> {
+    const value = this.makePayloadText(payload);
+    const input = this.findBestInput(container, payload.type);
+
+    if (!input) {
+      if (payload.type !== 'url') {
+        return this.tryClipboardTextImport(container, value);
+      }
+      return false;
+    }
+
+    this.setElementValue(input, value);
+    await wait(140);
+
+    const submit = this.findSubmitButton(container);
+    if (!submit) {
+      return false;
+    }
+
+    submit.click();
+    return true;
   }
 
   private findDeleteButtonsInDocument(): HTMLElement[] {
@@ -104,8 +310,7 @@ export class NotebookLMAdapter {
     const titleEl = queryFirstVisible<HTMLElement>(NOTEBOOKLM_SELECTORS.sourceTitle, card);
     const title = readElementText(titleEl);
     if (title) return title;
-    const fallback = readElementText(card).slice(0, 80);
-    return fallback;
+    return readElementText(card).slice(0, 80);
   }
 
   private sourceBodyFromCard(card: HTMLElement): string {
@@ -174,13 +379,13 @@ export class NotebookLMAdapter {
     await wait(300);
   }
 
-  async ensureSourceFlowReady(): Promise<{ ready: boolean; container?: HTMLElement }> {
+  private async ensureSourceFlowReady(): Promise<{ ready: boolean; container?: HTMLElement }> {
     if (!this.isNotebookDocumentPage()) {
       return { ready: false };
     }
 
     const existingContainer = this.findSourceDialogContainer();
-    if (existingContainer && this.findSourceInput(existingContainer)) {
+    if (existingContainer) {
       return { ready: true, container: existingContainer };
     }
 
@@ -193,43 +398,14 @@ export class NotebookLMAdapter {
     }
 
     openButton.click();
-    await wait(350);
+    await wait(220);
 
-    const container = this.findSourceDialogContainer();
+    const container = await this.waitForSourceDialog(2200);
     if (!container) {
       return { ready: false };
     }
-    return { ready: Boolean(this.findSourceInput(container)), container };
-  }
 
-  private makePayloadText(payload: QuickAddPayload): string {
-    if (payload.type === 'url') {
-      return [
-        `# ${payload.title || 'URL Source'}`,
-        '',
-        payload.content,
-        payload.memo ? `\nメモ: ${payload.memo}` : ''
-      ].join('\n');
-    }
-
-    if (payload.type === 'clipboardImage') {
-      return [
-        `# ${payload.title || 'Clipboard Image'}`,
-        '',
-        '- 種別: クリップボード画像',
-        payload.sourceUrl ? `- 元ページ: ${payload.sourceUrl}` : '- 元ページ: （不明）',
-        '- 注記: 画像本体はローカルバックアップに保存',
-        '',
-        payload.memo ? `メモ: ${payload.memo}` : 'メモ: （なし）'
-      ].join('\n');
-    }
-
-    return [
-      `# ${payload.title || 'Text Source'}`,
-      '',
-      payload.content,
-      payload.memo ? `\nメモ: ${payload.memo}` : ''
-    ].join('\n');
+    return { ready: true, container };
   }
 
   async addSource(payload: QuickAddPayload): Promise<{ success: boolean; reason?: string; fallbackText?: string }> {
@@ -246,45 +422,25 @@ export class NotebookLMAdapter {
     }
 
     const flow = await this.ensureSourceFlowReady();
-    const text = this.makePayloadText(payload);
     if (!flow.ready || !flow.container) {
       return {
         success: false,
         reason: 'NotebookLMのソース追加ダイアログを検出できませんでした。',
-        fallbackText: text
+        fallbackText: this.makePayloadText(payload)
       };
     }
 
-    const input = this.findSourceInput(flow.container);
-    if (!input) {
+    const modeContainer = await this.selectSourceMode(flow.container, payload.type);
+    const ok = await this.fillInputAndSubmit(modeContainer, payload);
+
+    if (!ok) {
       return {
         success: false,
-        reason: 'ソース入力欄が見つかりません。',
-        fallbackText: text
+        reason: 'ソース追加の入力または確定ボタン操作に失敗しました。',
+        fallbackText: this.makePayloadText(payload)
       };
     }
 
-    if (input instanceof HTMLTextAreaElement || input instanceof HTMLInputElement) {
-      setInputValue(input, text);
-    } else {
-      input.focus();
-      input.textContent = text;
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-      input.dispatchEvent(new Event('change', { bubbles: true }));
-    }
-
-    await wait(120);
-
-    const submit = this.findSubmitButton(flow.container);
-    if (!submit) {
-      return {
-        success: false,
-        reason: '追加実行ボタンが見つかりません。',
-        fallbackText: text
-      };
-    }
-
-    submit.click();
     return { success: true };
   }
 
@@ -297,7 +453,7 @@ export class NotebookLMAdapter {
     if (results.length > 0) return results;
 
     await this.ensureSourceListVisible();
-    await wait(200);
+    await wait(220);
     results = this.collectSourceCards();
     return results;
   }
