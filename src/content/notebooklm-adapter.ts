@@ -23,6 +23,26 @@ function containsAny(text: string, hints: string[]): boolean {
   return hints.some((hint) => target.includes(hint.toLowerCase()));
 }
 
+function isLikelySourceControlText(text: string): boolean {
+  const lowered = text.toLowerCase();
+  const hints = [
+    'ソースを追加',
+    'ウェブで新しいソースを検索',
+    'fast research',
+    'search',
+    'keyboard_arrow',
+    'arrow_forward',
+    'fileをアップロード',
+    'ファイルをアップロード',
+    'ウェブサイト',
+    'ドライブ',
+    'コピーしたテキスト',
+    'すべてのソースを選択'
+  ];
+  const hit = hints.reduce((count, hint) => (lowered.includes(hint) ? count + 1 : count), 0);
+  return hit >= 2;
+}
+
 function isVisible(el: HTMLElement): boolean {
   const rect = el.getBoundingClientRect();
   const style = window.getComputedStyle(el);
@@ -1052,7 +1072,8 @@ export class NotebookLMAdapter {
 
   private isLikelySourceCard(node: HTMLElement, inSourceContainer: boolean): boolean {
     const text = readElementText(node);
-    if (text.length < 12 || text.length > 5000) return false;
+    if (text.length < 2 || text.length > 5000) return false;
+    if (isLikelySourceControlText(text)) return false;
 
     const label = `${node.getAttribute('aria-label') || ''} ${node.className || ''}`;
     const hasSourceWord = containsAny(label, ['source', 'sources', 'ソース', 'reference', 'refs']);
@@ -1060,6 +1081,9 @@ export class NotebookLMAdapter {
       node.querySelector('[data-testid*="source"], [data-source-id], [role="treeitem"]') ||
       node.querySelector('a[href^="http"]') ||
       node.querySelector('button[aria-label*="delete"], button[aria-label*="削除"]')
+    );
+    const hasSelectionSignals = !!(
+      node.querySelector('[role="checkbox"], input[type="checkbox"], [aria-checked], [class*="checkbox"], [data-testid*="check"]')
     );
     const hasRowShape = !!(
       node.matches('[role="listitem"], [role="treeitem"], article, section') ||
@@ -1069,12 +1093,13 @@ export class NotebookLMAdapter {
 
     let score = 0;
     if (hasSourceSignals) score += 3;
+    if (hasSelectionSignals) score += 2;
     if (hasRowShape) score += 2;
     if (hasActionButtons) score += 1;
     if (hasSourceWord) score += 2;
     if (inSourceContainer) score += 1;
 
-    return score >= (inSourceContainer ? 3 : 5);
+    return score >= (inSourceContainer ? 2 : 4);
   }
 
   private compactCardCandidates(nodes: HTMLElement[]): HTMLElement[] {
@@ -1169,6 +1194,7 @@ export class NotebookLMAdapter {
         .replace(/\b(language|description)\b/gi, '')
         .trim();
       if (clean.length < 2 || clean.length > 180) return '';
+      if (isLikelySourceControlText(clean)) return '';
       const lower = clean.toLowerCase();
       if (bannedExactTitles.has(clean) || bannedExactTitles.has(lower)) return '';
       if (/^(delete|remove|open|menu|more)$/i.test(clean)) return '';
