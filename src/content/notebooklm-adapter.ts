@@ -407,6 +407,64 @@ export class NotebookLMAdapter {
     }
   }
 
+  private async pasteFileOnTarget(target: HTMLElement, file: File): Promise<boolean> {
+    try {
+      const transfer = new DataTransfer();
+      transfer.items.add(file);
+
+      let pasteEvent: ClipboardEvent | null = null;
+      try {
+        pasteEvent = new ClipboardEvent('paste', {
+          bubbles: true,
+          cancelable: true,
+          composed: true
+        });
+        Object.defineProperty(pasteEvent, 'clipboardData', {
+          value: transfer
+        });
+      } catch {
+        pasteEvent = null;
+      }
+
+      target.focus?.();
+      if (pasteEvent) {
+        target.dispatchEvent(pasteEvent);
+      }
+
+      try {
+        const before = new InputEvent('beforeinput', {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          inputType: 'insertFromPaste',
+          dataTransfer: transfer
+        });
+        target.dispatchEvent(before);
+      } catch {
+        // no-op
+      }
+
+      try {
+        const input = new InputEvent('input', {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          inputType: 'insertFromPaste',
+          dataTransfer: transfer
+        });
+        target.dispatchEvent(input);
+      } catch {
+        // no-op
+      }
+
+      await wait(220);
+      return true;
+    } catch (error) {
+      logger.warn('adapter', 'failed to dispatch paste events', error);
+      return false;
+    }
+  }
+
   private async waitForFileInput(container: HTMLElement, timeoutMs = 2400): Promise<HTMLInputElement | null> {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
@@ -459,6 +517,24 @@ export class NotebookLMAdapter {
     for (const target of this.findDropTargets(activeDialog)) {
       const dropped = await this.dropFileOnTarget(target, imageFile);
       if (!dropped) continue;
+
+      const submit = this.findSubmitButton(this.findSourceDialogContainer() ?? activeDialog);
+      if (submit) {
+        submit.click();
+        await wait(180);
+      }
+      if (await this.waitForDialogClosed(9000)) {
+        return true;
+      }
+    }
+
+    // Strategy 3: synthetic paste for UIs that accept image paste into the source modal.
+    const pasteTargets = [document.activeElement, ...this.findDropTargets(activeDialog)]
+      .filter((node): node is HTMLElement => node instanceof HTMLElement);
+
+    for (const target of pasteTargets) {
+      const pasted = await this.pasteFileOnTarget(target, imageFile);
+      if (!pasted) continue;
 
       const submit = this.findSubmitButton(this.findSourceDialogContainer() ?? activeDialog);
       if (submit) {
