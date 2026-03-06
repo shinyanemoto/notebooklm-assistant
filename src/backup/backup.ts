@@ -71,12 +71,14 @@ export function createRawBundleMarkdown(request: BackupRequest, now: Date = new 
   const titleList = request.sources.map((s) => `- ${s.title}`).join('\n');
   const blocks = request.sources
     .map((source, i) => {
+      const rawBody = (source.body || '').trim();
+      const bodyText = rawBody || `（本文抽出不可 / タイトル: ${source.title}）`;
       return [
         `## ${i + 1}. ${source.title}`,
         source.url ? `- URL: ${source.url}` : '- URL: （なし）',
         '',
         '```text',
-        source.body || '（本文抽出不可）',
+        bodyText,
         '```'
       ].join('\n');
     })

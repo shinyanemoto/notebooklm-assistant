@@ -1173,6 +1173,76 @@ export class NotebookLMAdapter {
     return urlEl?.href;
   }
 
+  private cleanExtractedBody(text: string): string {
+    return text
+      .replace(/\u00A0/g, ' ')
+      .replace(/\s+\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+
+  private looksLikeUiOnlyText(text: string): boolean {
+    const normalized = this.normalizeSourceKey(text);
+    const hints = [
+      'notebooklmは不正確',
+      '回答は再確認',
+      '入力を開始します',
+      'chat',
+      'studio',
+      'sources',
+      'ソース'
+    ];
+    return hints.some((hint) => normalized.includes(hint)) && text.length < 320;
+  }
+
+  private extractSourceDetailText(source: SourceRecord): string {
+    const titleKey = this.normalizeSourceKey(source.title);
+    const sourceListContainer = this.findSourceListContainer();
+    const cardRect = source.cardEl.getBoundingClientRect();
+    let best: { score: number; text: string } | null = null;
+
+    const candidates = queryAllDeep<HTMLElement>(
+      document,
+      '[role="dialog"], [aria-modal="true"], article, section, [role="tabpanel"], [role="region"], main div, aside div'
+    );
+
+    for (const node of candidates) {
+      if (isAssistantUiNode(node)) continue;
+      if (!isVisible(node)) continue;
+      if (node === source.cardEl || source.cardEl.contains(node)) continue;
+      if (sourceListContainer && (node === sourceListContainer || sourceListContainer.contains(node))) continue;
+
+      const text = this.cleanExtractedBody(readElementText(node));
+      if (text.length < 80) continue;
+      if (this.looksLikeUiOnlyText(text)) continue;
+
+      const rect = node.getBoundingClientRect();
+      let score = 0;
+      const normalized = this.normalizeSourceKey(text);
+
+      if (titleKey && normalized.includes(titleKey)) score += 30;
+      if (source.body) {
+        const bodySeed = this.normalizeSourceKey(source.body).slice(0, 36);
+        if (bodySeed && normalized.includes(bodySeed)) score += 8;
+      }
+
+      if (node.matches('[role="dialog"], [aria-modal="true"]')) score += 24;
+
+      // Prefer blocks spatially close to source cards, but not tiny snippets.
+      const horizontalDistance = Math.abs(rect.left - cardRect.left);
+      if (horizontalDistance < 360) score += 6;
+      if (rect.width > 320) score += 4;
+      score += Math.min(24, Math.floor(text.length / 280));
+
+      if (best === null || score > best.score) {
+        best = { score, text };
+      }
+    }
+
+    if (!best) return '';
+    return best.text;
+  }
+
   private sourceRecordKey(source: SourceRecord): string {
     if (source.id) return `id:${source.id}`;
     if (source.domPathHint) return `path:${source.domPathHint}`;
@@ -1531,6 +1601,39 @@ export class NotebookLMAdapter {
     }
 
     return results;
+  }
+
+  async scanSourcesWithDetails(): Promise<SourceRecord[]> {
+    const base = await this.scanSources();
+    if (base.length === 0) return [];
+
+    await this.ensureSourcesTabVisible();
+    await this.ensureSourceListVisible();
+
+    const detailed: SourceRecord[] = [];
+    for (const source of base) {
+      const live = (await this.findLiveSourceRecord(source)) ?? source;
+      const card = live.cardEl;
+
+      if (this.isConnectedVisible(card)) {
+        this.revealSourceCardActions(card);
+        card.click();
+        await wait(240);
+      }
+
+      const detailText = this.extractSourceDetailText(live);
+      const bodyCandidate = this.cleanExtractedBody(detailText);
+      const fallbackBody = this.cleanExtractedBody(source.body);
+
+      detailed.push({
+        ...live,
+        body: bodyCandidate.length >= Math.max(120, fallbackBody.length) ? bodyCandidate : fallbackBody
+      });
+
+      await wait(90);
+    }
+
+    return detailed;
   }
 
   async deleteSources(sources: SourceRecord[], dryRun: boolean): Promise<{

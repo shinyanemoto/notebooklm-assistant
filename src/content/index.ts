@@ -518,9 +518,12 @@ async function createBackup(mode: 'before-delete' | 'before-merge' | 'manual', t
 }
 
 async function backupAllSourcesAsRawSingleFile(): Promise<void> {
-  setStatus('全ソースを再取得中...', 'info');
-  const scanned = await adapter.scanSources();
-  const targets = dedupeSources(scanned);
+  setStatus('全ソースを再取得中（詳細本文抽出あり）...', 'info');
+  const scanned = await adapter.scanSourcesWithDetails();
+  const targets = dedupeSources(scanned).map((source) => ({
+    ...source,
+    body: source.body.trim()
+  }));
   if (targets.length === 0) {
     setStatus('バックアップ対象ソースが見つかりません。', 'error');
     return;
@@ -553,7 +556,8 @@ async function backupAllSourcesAsRawSingleFile(): Promise<void> {
   state.lastBackupIds = new Set(targets.map((t) => t.id));
   getById<HTMLDivElement>(ids.backupInfo).textContent = `最新バックアップ対象: 全${targets.length}件（内容改変なし）`;
   updateDeleteButtonState();
-  setStatus(`全ソース単一バックアップ保存完了: ${filename}`, 'success');
+  const extractedCount = targets.filter((t) => t.body.length > 0).length;
+  setStatus(`全ソース単一バックアップ保存完了: ${filename}（本文取得 ${extractedCount}/${targets.length}件）`, 'success');
 }
 
 async function previewMerge(): Promise<void> {
