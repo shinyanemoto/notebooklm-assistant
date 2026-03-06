@@ -6,6 +6,7 @@ import {
   createChatExportMarkdown
 } from '../backup/backup';
 import { logger } from '../lib/logger';
+import { NOTEBOOKLM_SELECTORS } from '../selectors/notebooklm';
 import { getSettings } from '../lib/storage';
 import { mergeSources } from '../merge/merge';
 import type { RuntimeMessage, RuntimeResponse } from '../types/messages';
@@ -58,6 +59,7 @@ const ids = {
 const CHAT_EXPORT_PROMPT =
   '全ソースを内容変更することなく出して。省略せず、各ソースのタイトルと本文をそのまま列挙してください。';
 const CUSTOM_PROMPTS_STORAGE_KEY = 'nlm_custom_prompts';
+const URL_MATCH_REGEX = /https?:\/\/[^\s<>"'`]+/g;
 const ROLE_PROMPT_DEFAULT = `【役割定義】
 あなたは、私の業務を強力にサポートする「タスク整理エージェント：伴走くん」です。
 提供されたすべてのソース（メモ、URL、スクショ、画像）を「処理すべき生データ」として扱い、それらを構造化・整理することがあなたの使命です。
@@ -1013,6 +1015,184 @@ function setupFabAutoPosition(): void {
   setInterval(schedule, 1000);
 }
 
+function isVisibleElement(el: HTMLElement): boolean {
+  const rect = el.getBoundingClientRect();
+  const style = window.getComputedStyle(el);
+  return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+}
+
+function isLinkifyEligibleTextNode(node: Text): boolean {
+  const parent = node.parentElement;
+  if (!parent) return false;
+  if (parent.closest('#nlm-assistant-root')) return false;
+  if (parent.closest('a, code, pre, textarea, input, button, [role="textbox"], [contenteditable="true"]')) return false;
+  const text = node.textContent || '';
+  URL_MATCH_REGEX.lastIndex = 0;
+  return URL_MATCH_REGEX.test(text);
+}
+
+function normalizeUrlToken(token: string): { url: string; trailing: string } {
+  const trailingChars = '.,!?:;)]}、。」』】＞';
+  let url = token;
+  let trailing = '';
+  while (url.length > 0) {
+    const last = url[url.length - 1];
+    if (!trailingChars.includes(last)) break;
+    trailing = `${last}${trailing}`;
+    url = url.slice(0, -1);
+  }
+  return { url, trailing };
+}
+
+function isHttpUrl(text: string): boolean {
+  try {
+    const parsed = new URL(text);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+function linkifySingleTextNode(node: Text): boolean {
+  const parent = node.parentNode;
+  if (!parent) return false;
+  const raw = node.textContent || '';
+  URL_MATCH_REGEX.lastIndex = 0;
+  if (!URL_MATCH_REGEX.test(raw)) return false;
+
+  URL_MATCH_REGEX.lastIndex = 0;
+  const fragment = document.createDocumentFragment();
+  let lastIndex = 0;
+  let changed = false;
+
+  for (const match of raw.matchAll(URL_MATCH_REGEX)) {
+    const token = match[0];
+    const start = match.index ?? 0;
+    if (start > lastIndex) {
+      fragment.appendChild(document.createTextNode(raw.slice(lastIndex, start)));
+    }
+
+    const { url, trailing } = normalizeUrlToken(token);
+    if (isHttpUrl(url)) {
+      const link = document.createElement('a');
+      link.href = url;
+      link.textContent = url;
+      link.className = 'nlm-auto-link';
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      fragment.appendChild(link);
+      if (trailing) {
+        fragment.appendChild(document.createTextNode(trailing));
+      }
+      changed = true;
+    } else {
+      fragment.appendChild(document.createTextNode(token));
+    }
+    lastIndex = start + token.length;
+  }
+
+  if (lastIndex < raw.length) {
+    fragment.appendChild(document.createTextNode(raw.slice(lastIndex)));
+  }
+
+  if (!changed) return false;
+  parent.replaceChild(fragment, node);
+  return true;
+}
+
+function linkifyContainerUrls(container: HTMLElement): number {
+  if (!isVisibleElement(container)) return 0;
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+  const nodes: Text[] = [];
+  while (walker.nextNode()) {
+    const node = walker.currentNode;
+    if (node instanceof Text && isLinkifyEligibleTextNode(node)) {
+      nodes.push(node);
+    }
+  }
+
+  let changed = 0;
+  for (const node of nodes) {
+    if (linkifySingleTextNode(node)) changed += 1;
+  }
+  return changed;
+}
+
+function findMessageContainer(node: Node | null): HTMLElement | null {
+  if (!node) return null;
+  const selector = NOTEBOOKLM_SELECTORS.assistantMessageContainers.join(',');
+  if (!selector) return null;
+
+  if (node instanceof HTMLElement) {
+    return node.closest<HTMLElement>(selector);
+  }
+  if (node.parentElement) {
+    return node.parentElement.closest<HTMLElement>(selector);
+  }
+  return null;
+}
+
+function setupChatUrlLinkifier(): void {
+  const pending = new Set<HTMLElement>();
+  let scheduled = false;
+
+  const scheduleFlush = (): void => {
+    if (scheduled) return;
+    scheduled = true;
+    requestAnimationFrame(() => {
+      scheduled = false;
+      for (const container of Array.from(pending)) {
+        pending.delete(container);
+        if (container.closest('#nlm-assistant-root')) continue;
+        linkifyContainerUrls(container);
+      }
+    });
+  };
+
+  const enqueue = (node: Node | null): void => {
+    const container = findMessageContainer(node);
+    if (!container) return;
+    if (container.closest('#nlm-assistant-root')) return;
+    pending.add(container);
+    scheduleFlush();
+  };
+
+  const seed = (): void => {
+    const selector = NOTEBOOKLM_SELECTORS.assistantMessageContainers.join(',');
+    if (!selector) return;
+    for (const el of Array.from(document.querySelectorAll<HTMLElement>(selector))) {
+      if (el.closest('#nlm-assistant-root')) continue;
+      const text = el.textContent || '';
+      if (!text.includes('http://') && !text.includes('https://')) continue;
+      pending.add(el);
+    }
+    scheduleFlush();
+  };
+
+  seed();
+  const observer = new MutationObserver((mutations) => {
+    for (const mutation of mutations) {
+      if (mutation.type === 'characterData') {
+        enqueue(mutation.target);
+      }
+      if (mutation.type === 'childList') {
+        enqueue(mutation.target);
+        for (const node of Array.from(mutation.addedNodes)) {
+          enqueue(node);
+        }
+      }
+    }
+  });
+
+  observer.observe(document.body, {
+    subtree: true,
+    childList: true,
+    characterData: true
+  });
+
+  setInterval(seed, 2000);
+}
+
 function showQuickModal(prefill?: { content?: string; title?: string; memo?: string }): void {
   const modal = getById<HTMLDivElement>(ids.quickModal);
   modal.style.display = 'flex';
@@ -1064,6 +1244,7 @@ function injectStyles(): void {
     .nlm-actions button { border: 0; border-radius: 6px; padding: 8px 10px; cursor: pointer; background: #ececec; }
     .nlm-actions .primary { background: #1f4c3f; color: white; }
     .nlm-actions .danger { background: #7f1d1d; color: white; }
+    .nlm-auto-link { color: #0b57d0; text-decoration: underline; word-break: break-all; }
     .nlm-status { margin-top: 8px; padding: 8px; border-radius: 6px; font-size: 12px; background: #eff6ff; }
     .nlm-status[data-level="success"] { background: #dcfce7; }
     .nlm-status[data-level="error"] { background: #fee2e2; }
@@ -1370,6 +1551,7 @@ async function init(): Promise<void> {
   renderCustomPromptList();
   setStatus('待機中', 'info');
   setupFabAutoPosition();
+  setupChatUrlLinkifier();
   logger.info('content', 'NotebookLM assistant initialized');
 }
 
