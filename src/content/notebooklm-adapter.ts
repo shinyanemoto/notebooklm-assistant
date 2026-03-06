@@ -304,6 +304,31 @@ export class NotebookLMAdapter {
     return imageInput || inputs[0];
   }
 
+  private findDropTargets(container: HTMLElement): HTMLElement[] {
+    const targets = new Set<HTMLElement>();
+    const hints = ['またはファイルをドロップ', 'ファイルをドロップ', 'drop file', 'drop files'];
+
+    const rootCandidates = [
+      container,
+      ...Array.from(container.querySelectorAll<HTMLElement>('div, section, article, label'))
+    ];
+
+    for (const node of rootCandidates) {
+      if (!isVisible(node)) continue;
+      const text = readElementText(node).toLowerCase();
+      if (!text) continue;
+      if (hints.some((hint) => text.includes(hint.toLowerCase()))) {
+        targets.add(node);
+      }
+    }
+
+    if (targets.size === 0) {
+      targets.add(container);
+    }
+
+    return Array.from(targets);
+  }
+
   private setFilesToInput(input: HTMLInputElement, file: File): boolean {
     try {
       const transfer = new DataTransfer();
@@ -314,6 +339,28 @@ export class NotebookLMAdapter {
       return true;
     } catch (error) {
       logger.warn('adapter', 'failed to inject file into input', error);
+      return false;
+    }
+  }
+
+  private async dropFileOnTarget(target: HTMLElement, file: File): Promise<boolean> {
+    try {
+      const transfer = new DataTransfer();
+      transfer.items.add(file);
+
+      const events: Array<'dragenter' | 'dragover' | 'drop'> = ['dragenter', 'dragover', 'drop'];
+      for (const type of events) {
+        const event = new DragEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          dataTransfer: transfer
+        });
+        target.dispatchEvent(event);
+      }
+      await wait(220);
+      return true;
+    } catch (error) {
+      logger.warn('adapter', 'failed to dispatch drop events', error);
       return false;
     }
   }
@@ -333,39 +380,56 @@ export class NotebookLMAdapter {
     const imageFile = await this.buildClipboardImageFile(payload);
     if (!imageFile) return false;
 
-    const fileModeButton = this.findButtonByHints(container, NOTEBOOKLM_SELECTORS.sourceModeTextHints.file);
+    const dialog = await this.waitForSourceDialog(1400) ?? container;
+    const fileModeButton = this.findButtonByHints(dialog, NOTEBOOKLM_SELECTORS.sourceModeTextHints.file);
     if (fileModeButton) {
       fileModeButton.click();
-      await wait(220);
-    }
-
-    const dialog = await this.waitForSourceDialog(1400) ?? container;
-    const uploadButton = this.findButtonByHints(dialog, ['ファイルをアップロード', 'upload file', 'upload']);
-    if (uploadButton) {
-      uploadButton.click();
-      await wait(120);
-    }
-
-    const input = await this.waitForFileInput(dialog, 2600);
-    if (!input) {
-      logger.warn('adapter', 'file input not found for clipboard image');
-      return false;
-    }
-
-    const assigned = this.setFilesToInput(input, imageFile);
-    if (!assigned) {
-      return false;
-    }
-
-    await wait(180);
-    const activeDialog = this.findSourceDialogContainer() ?? dialog;
-    const submit = this.findSubmitButton(activeDialog);
-    if (submit) {
-      submit.click();
       await wait(180);
     }
 
-    return this.waitForDialogClosed(9000);
+    const activeDialog = await this.waitForSourceDialog(1200) ?? dialog;
+
+    // Strategy 1: direct assignment to file input.
+    let input = this.findBestFileInput(activeDialog) || this.findBestFileInput(document);
+    if (!input) {
+      const uploadButton = this.findButtonByHints(activeDialog, ['ファイルをアップロード', 'upload file', 'upload']);
+      if (uploadButton) {
+        uploadButton.click();
+        await wait(120);
+      }
+      input = await this.waitForFileInput(activeDialog, 1800);
+    }
+
+    if (input && this.setFilesToInput(input, imageFile)) {
+      await wait(220);
+      const submit = this.findSubmitButton(this.findSourceDialogContainer() ?? activeDialog);
+      if (submit) {
+        submit.click();
+        await wait(180);
+      }
+      if (await this.waitForDialogClosed(9000)) {
+        return true;
+      }
+      logger.warn('adapter', 'file input assignment path did not close dialog');
+    }
+
+    // Strategy 2: synthetic drop on drop-zone-like targets.
+    for (const target of this.findDropTargets(activeDialog)) {
+      const dropped = await this.dropFileOnTarget(target, imageFile);
+      if (!dropped) continue;
+
+      const submit = this.findSubmitButton(this.findSourceDialogContainer() ?? activeDialog);
+      if (submit) {
+        submit.click();
+        await wait(180);
+      }
+      if (await this.waitForDialogClosed(9000)) {
+        return true;
+      }
+    }
+
+    logger.warn('adapter', 'clipboard image import failed in all strategies');
+    return false;
   }
 
   private async tryClipboardTextImport(container: HTMLElement, text: string): Promise<boolean> {
@@ -433,7 +497,8 @@ export class NotebookLMAdapter {
     if (payload.type === 'clipboardImage') {
       const imageImported = await this.tryClipboardImageImport(container, payload);
       if (imageImported) return true;
-      logger.warn('adapter', 'clipboard image import failed; using copied-text fallback');
+      logger.warn('adapter', 'clipboard image import failed');
+      return false;
     }
 
     if (payload.type !== 'url') {
