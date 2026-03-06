@@ -1,0 +1,52 @@
+{
+  "manifest_version": 3,
+  "name": "NotebookLM Assistant MVP",
+  "description": "NotebookLMでのソース追加・統合・バックアップ・一括削除を支援する拡張機能",
+  "version": "0.1.0",
+  "permissions": [
+    "storage",
+    "downloads",
+    "tabs",
+    "activeTab",
+    "contextMenus",
+    "clipboardRead"
+  ],
+  "host_permissions": [
+    "https://notebooklm.google.com/*",
+    "https://*.notebooklm.google.com/*"
+  ],
+  "background": {
+    "service_worker": "dist/background/index.js"
+  },
+  "action": {
+    "default_title": "NotebookLM Assistant",
+    "default_popup": "public/popup.html"
+  },
+  "options_page": "public/options.html",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://notebooklm.google.com/*",
+        "https://*.notebooklm.google.com/*"
+      ],
+      "js": [
+        "dist/content/index.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "commands": {
+    "open-quick-add": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+S",
+        "mac": "Command+Shift+S"
+      },
+      "description": "NotebookLMクイック追加ウィンドウを開く"
+    }
+  },
+  "icons": {
+    "16": "public/icons/icon16.png",
+    "48": "public/icons/icon48.png",
+    "128": "public/icons/icon128.png"
+  }
+}
