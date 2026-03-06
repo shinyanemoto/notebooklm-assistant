@@ -203,6 +203,23 @@ export class NotebookLMAdapter {
     return null;
   }
 
+  private findTitleInput(container: ParentNode): HTMLTextAreaElement | HTMLInputElement | HTMLElement | null {
+    const candidates = queryAllDeep<HTMLElement>(container, NOTEBOOKLM_SELECTORS.sourceInputFields.join(','))
+      .filter((el) => isVisible(el as HTMLElement))
+      .filter((el) => !isAssistantUiNode(el));
+
+    for (const candidate of candidates) {
+      if (this.isWebSearchInput(candidate)) continue;
+      const text = this.fieldText(candidate);
+      if (!text) continue;
+      if (containsAny(text, ['title', 'タイトル', 'source title', 'source name', '名前'])) {
+        return candidate;
+      }
+    }
+
+    return null;
+  }
+
   private setElementValue(input: HTMLTextAreaElement | HTMLInputElement | HTMLElement, value: string): void {
     if (input instanceof HTMLTextAreaElement || input instanceof HTMLInputElement) {
       setInputValue(input, value);
@@ -626,13 +643,20 @@ export class NotebookLMAdapter {
     return false;
   }
 
-  private async tryClipboardTextImport(container: HTMLElement, text: string): Promise<boolean> {
+  private async tryClipboardTextImport(container: HTMLElement, text: string, title?: string): Promise<boolean> {
     const modeButton = this.findButtonByHints(container, ['コピーしたテキスト', 'paste text', 'pasted text', 'copied text']);
     if (!modeButton) return false;
     modeButton.click();
     await wait(160);
 
     const nextDialog = await this.waitForSourceDialog(1400) ?? container;
+    if (title) {
+      const titleInput = this.findTitleInput(nextDialog);
+      if (titleInput) {
+        this.setElementValue(titleInput, title);
+        await wait(40);
+      }
+    }
 
     const input = this.findBestInput(nextDialog, 'text');
     if (input) {
@@ -696,15 +720,23 @@ export class NotebookLMAdapter {
     }
 
     if (payload.type !== 'url') {
-      const imported = await this.tryClipboardTextImport(container, value);
+      const imported = await this.tryClipboardTextImport(container, value, payload.title);
       if (imported) return true;
+    }
+
+    if (payload.title) {
+      const titleInput = this.findTitleInput(container);
+      if (titleInput) {
+        this.setElementValue(titleInput, payload.title);
+        await wait(40);
+      }
     }
 
     const input = this.findBestInput(container, payload.type);
 
     if (!input) {
       if (payload.type !== 'url') {
-        return this.tryClipboardTextImport(container, value);
+        return this.tryClipboardTextImport(container, value, payload.title);
       }
       return false;
     }

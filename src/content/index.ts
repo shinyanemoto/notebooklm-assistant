@@ -244,13 +244,19 @@ function formatTimestampToSecond(now: Date = new Date()): string {
   return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
 }
 
-function defaultTitleFromContent(type: QuickAddPayload['type'], content: string): string {
+function compactTimestamp(timestamp: string): string {
+  return timestamp.replaceAll('-', '').replaceAll(':', '').replaceAll(' ', '_');
+}
+
+function defaultTitleFromContent(type: QuickAddPayload['type'], content: string, timestamp: string): string {
   if (type === 'clipboardImage') {
-    return `Clipboard Image ${new Date().toISOString().slice(0, 10)}`;
+    return `Clipboard_Image_${compactTimestamp(timestamp)}`;
   }
 
-  const firstLine = content.split('\n').map((v) => v.trim()).find(Boolean) || 'テキスト追加';
-  return firstLine.slice(0, 40);
+  if (content) {
+    return `貼り付け_${compactTimestamp(timestamp)}`;
+  }
+  return `テキスト_${compactTimestamp(timestamp)}`;
 }
 
 function appendQuickAddTimestampMemo(memo: string, timestamp: string): string {
@@ -283,14 +289,14 @@ function buildClipboardImageUploadMeta(payload: QuickAddPayload, timestamp: stri
   ].join('\n');
 }
 
-function buildQuickPayload(): QuickAddPayload {
+function buildQuickPayload(timestamp: string): QuickAddPayload {
   const inputText = getById<HTMLTextAreaElement>('nlm-qa-input').value.trim();
   const manualTitle = getById<HTMLInputElement>('nlm-qa-title').value.trim();
   const memo = getById<HTMLTextAreaElement>('nlm-qa-memo').value.trim();
 
   const type: QuickAddPayload['type'] = state.clipboardImageDataUrl ? 'clipboardImage' : 'text';
 
-  const title = manualTitle || defaultTitleFromContent(type, inputText);
+  const title = manualTitle || defaultTitleFromContent(type, inputText, timestamp);
 
   if (type === 'clipboardImage') {
     const mergedMemo = [memo, inputText].filter(Boolean).join('\n');
@@ -314,8 +320,8 @@ function buildQuickPayload(): QuickAddPayload {
 }
 
 async function executeQuickAdd(): Promise<void> {
-  const payload = buildQuickPayload();
   const timestamp = formatTimestampToSecond();
+  const payload = buildQuickPayload(timestamp);
 
   if (!payload.content && payload.type !== 'clipboardImage') {
     setStatus('貼り付け内容が空です。テキストまたはURLを貼り付けてください。', 'error');
