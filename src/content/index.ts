@@ -1,4 +1,10 @@
-import { buildBackupFilename, buildImageFilename, createBackupMarkdown } from '../backup/backup';
+import {
+  buildBackupFilename,
+  buildImageFilename,
+  buildRawBundleFilename,
+  createBackupMarkdown,
+  createRawBundleMarkdown
+} from '../backup/backup';
 import { logger } from '../lib/logger';
 import { getSettings } from '../lib/storage';
 import { mergeSources } from '../merge/merge';
@@ -511,6 +517,45 @@ async function createBackup(mode: 'before-delete' | 'before-merge' | 'manual', t
   return true;
 }
 
+async function backupAllSourcesAsRawSingleFile(): Promise<void> {
+  setStatus('全ソースを再取得中...', 'info');
+  const scanned = await adapter.scanSources();
+  const targets = dedupeSources(scanned);
+  if (targets.length === 0) {
+    setStatus('バックアップ対象ソースが見つかりません。', 'error');
+    return;
+  }
+
+  state.sources = targets;
+  state.selectedIds = new Set(targets.map((s) => s.id));
+  renderSourceList();
+
+  const markdown = createRawBundleMarkdown({
+    mode: 'manual',
+    projectName: adapter.getProjectName(),
+    sources: targets
+  });
+
+  const filename = withPrefix(state.settings.backupPathPrefix, buildRawBundleFilename());
+  const response = await sendRuntimeMessage({
+    type: 'DOWNLOAD_MARKDOWN',
+    payload: {
+      filename,
+      content: markdown
+    }
+  });
+
+  if (!response.ok) {
+    setStatus(`全ソースバックアップ失敗: ${response.error || '不明なエラー'}`, 'error');
+    return;
+  }
+
+  state.lastBackupIds = new Set(targets.map((t) => t.id));
+  getById<HTMLDivElement>(ids.backupInfo).textContent = `最新バックアップ対象: 全${targets.length}件（内容改変なし）`;
+  updateDeleteButtonState();
+  setStatus(`全ソース単一バックアップ保存完了: ${filename}`, 'success');
+}
+
 async function previewMerge(): Promise<void> {
   const targets = selectedSources();
   if (targets.length === 0) {
@@ -925,6 +970,7 @@ function renderShell(): void {
 
         <div class="nlm-actions">
           <button id="nlm-backup-selected">選択ソースをバックアップ</button>
+          <button id="nlm-backup-all-raw">全ソースを1ファイルでバックアップ（内容改変なし）</button>
           <button id="nlm-preview-merge">統合プレビュー生成</button>
           <button id="nlm-add-merged" class="primary">統合ソースを追加（事前バックアップ付き）</button>
           <button id="nlm-export-merged-file">統合をMD保存→ファイル追加導線</button>
@@ -1038,6 +1084,10 @@ function bindEvents(): void {
 
   getById<HTMLButtonElement>('nlm-backup-selected').addEventListener('click', async () => {
     await createBackup('manual', selectedSources());
+  });
+
+  getById<HTMLButtonElement>('nlm-backup-all-raw').addEventListener('click', async () => {
+    await backupAllSourcesAsRawSingleFile();
   });
 
   getById<HTMLButtonElement>('nlm-preview-merge').addEventListener('click', async () => {

@@ -20,6 +20,11 @@ export function buildBackupFilename(kind: 'backup' | 'merge_backup', now: Date =
   return `notebooklm_backup_${stamp}.md`;
 }
 
+export function buildRawBundleFilename(now: Date = new Date()): string {
+  const { stamp } = formatDateParts(now);
+  return `notebooklm_raw_bundle_${stamp}.md`;
+}
+
 export function buildImageFilename(now: Date = new Date()): string {
   const { stamp } = formatDateParts(now);
   return `notebooklm_clipboard_image_${stamp}.png`;
@@ -58,5 +63,36 @@ export function createBackupMarkdown(request: BackupRequest, now: Date = new Dat
     '## 各ソース本文',
     blocks || '（本文なし）',
     mergedInfo
+  ].join('\n');
+}
+
+export function createRawBundleMarkdown(request: BackupRequest, now: Date = new Date()): string {
+  const { display } = formatDateParts(now);
+  const titleList = request.sources.map((s) => `- ${s.title}`).join('\n');
+  const blocks = request.sources
+    .map((source, i) => {
+      return [
+        `## ${i + 1}. ${source.title}`,
+        source.url ? `- URL: ${source.url}` : '- URL: （なし）',
+        '',
+        '```text',
+        source.body || '（本文抽出不可）',
+        '```'
+      ].join('\n');
+    })
+    .join('\n\n');
+
+  return [
+    '# NotebookLM 全ソース単一バックアップ（内容改変なし）',
+    '',
+    `- バックアップ日時: ${display}`,
+    `- プロジェクト: ${request.projectName}`,
+    '- 備考: ソース本文は統合・要約せず、そのまま列挙',
+    '',
+    '## 対象ソース一覧',
+    titleList || '- （対象なし）',
+    '',
+    '## ソース本文（生データ）',
+    blocks || '（本文なし）'
   ].join('\n');
 }
