@@ -308,14 +308,17 @@ async function executeQuickAdd(): Promise<void> {
   }
 
   if (payload.type === 'clipboardImage') {
-    const dialogOpened = await adapter.openSourceDialog();
+    const uploadPickerOpened = await adapter.prepareManualImageUpload();
+    const dialogOpened = uploadPickerOpened ? true : await adapter.openSourceDialog();
     const clipboardPrepared = payload.imageDataUrl ? await writeImageDataUrlToClipboard(payload.imageDataUrl) : false;
     const instructions = [
       `画像の自動追加に失敗: ${result.reason || '不明なエラー'}`,
-      dialogOpened ? 'NotebookLMのソース追加ダイアログは開いています。' : 'NotebookLMのソース追加ダイアログを開けませんでした。',
-      clipboardPrepared
-        ? '画像をクリップボードへ再セットしました。ダイアログ上で Ctrl/Cmd+V して、挿入（または追加）を押してください。'
-        : '画像のクリップボード再セットに失敗しました。ダイアログ上で手動アップロードしてください。'
+      dialogOpened ? 'NotebookLMのソース追加ダイアログを開きました。' : 'NotebookLMのソース追加ダイアログを開けませんでした。',
+      uploadPickerOpened
+        ? 'ファイル選択を開きました。直近の notebooklm_clipboard_image_*.png を選択して取り込んでください。'
+        : (clipboardPrepared
+          ? '画像をクリップボードへ再セットしました。ダイアログ上で Ctrl/Cmd+V して、挿入（または追加）を押してください。'
+          : '画像のクリップボード再セットに失敗しました。ダイアログ上で手動アップロードしてください。')
     ];
     setStatus(instructions.join(' '), 'error');
     return;

@@ -985,6 +985,46 @@ export class NotebookLMAdapter {
     return !!(flow.ready && flow.container);
   }
 
+  async prepareManualImageUpload(): Promise<boolean> {
+    if (!this.isNotebookDocumentPage()) return false;
+
+    const flow = await this.ensureSourceFlowReady();
+    if (!flow.ready || !flow.container) return false;
+
+    const dialog = (await this.waitForSourceDialog(1000)) ?? flow.container;
+    const fileModeButton = this.findButtonByHints(dialog, NOTEBOOKLM_SELECTORS.sourceModeTextHints.file);
+    if (fileModeButton) {
+      fileModeButton.click();
+      await wait(180);
+    }
+
+    const activeDialog = (await this.waitForSourceDialog(1000)) ?? dialog;
+    const uploadButton = this.findButtonByHints(activeDialog, ['ファイルをアップロード', 'upload file', 'upload']);
+    if (uploadButton) {
+      uploadButton.click();
+      return true;
+    }
+
+    const fileInput = this.findBestFileInput(activeDialog) || this.findBestFileInput(document);
+    if (!fileInput) return false;
+
+    try {
+      if (typeof fileInput.showPicker === 'function') {
+        fileInput.showPicker();
+        return true;
+      }
+    } catch {
+      // no-op
+    }
+
+    try {
+      fileInput.click();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async scanSources(): Promise<SourceRecord[]> {
     if (!this.isNotebookLMPage()) {
       return [];
