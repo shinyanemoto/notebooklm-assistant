@@ -29,6 +29,40 @@ function isVisible(el: HTMLElement): boolean {
   return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
 }
 
+function queryAllDeep<T extends Element>(root: ParentNode, selector: string): T[] {
+  const results = new Set<T>();
+  const queue: ParentNode[] = [root];
+  const visited = new Set<ParentNode>();
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current || visited.has(current)) continue;
+    visited.add(current);
+
+    for (const node of Array.from(current.querySelectorAll<T>(selector))) {
+      results.add(node);
+    }
+
+    for (const el of Array.from(current.querySelectorAll<HTMLElement>('*'))) {
+      if (el.shadowRoot && !visited.has(el.shadowRoot)) {
+        queue.push(el.shadowRoot);
+      }
+    }
+  }
+
+  return Array.from(results);
+}
+
+function isNodeInside(node: Node, container: HTMLElement): boolean {
+  let current: Node | null = node;
+  while (current) {
+    if (current === container) return true;
+    if (current instanceof ShadowRoot) current = current.host;
+    else current = current.parentNode;
+  }
+  return false;
+}
+
 export class NotebookLMAdapter {
   isNotebookLMPage(): boolean {
     return location.hostname.includes('notebooklm.google.com');
@@ -296,9 +330,16 @@ export class NotebookLMAdapter {
   }
 
   private findBestFileInput(container: ParentNode): HTMLInputElement | null {
-    const inputs = Array.from(container.querySelectorAll<HTMLInputElement>('input[type="file"]'))
-      .filter((input) => !input.disabled);
+    const inputs = queryAllDeep<HTMLInputElement>(container, 'input[type="file"]').filter((input) => !input.disabled);
     if (inputs.length === 0) return null;
+
+    if (container instanceof HTMLElement) {
+      const nested = inputs.filter((input) => isNodeInside(input, container));
+      if (nested.length > 0) {
+        const nestedImageInput = nested.find((input) => (input.accept || '').toLowerCase().includes('image'));
+        return nestedImageInput || nested[0];
+      }
+    }
 
     const imageInput = inputs.find((input) => (input.accept || '').toLowerCase().includes('image'));
     return imageInput || inputs[0];
@@ -310,7 +351,7 @@ export class NotebookLMAdapter {
 
     const rootCandidates = [
       container,
-      ...Array.from(container.querySelectorAll<HTMLElement>('div, section, article, label'))
+      ...queryAllDeep<HTMLElement>(container, 'div, section, article, label')
     ];
 
     for (const node of rootCandidates) {
@@ -334,8 +375,8 @@ export class NotebookLMAdapter {
       const transfer = new DataTransfer();
       transfer.items.add(file);
       input.files = transfer.files;
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-      input.dispatchEvent(new Event('change', { bubbles: true }));
+      input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
       return true;
     } catch (error) {
       logger.warn('adapter', 'failed to inject file into input', error);
@@ -353,6 +394,7 @@ export class NotebookLMAdapter {
         const event = new DragEvent(type, {
           bubbles: true,
           cancelable: true,
+          composed: true,
           dataTransfer: transfer
         });
         target.dispatchEvent(event);
