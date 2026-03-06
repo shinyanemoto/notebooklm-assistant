@@ -40,7 +40,7 @@ function isLikelySourceControlText(text: string): boolean {
     'すべてのソースを選択'
   ];
   const hit = hints.reduce((count, hint) => (lowered.includes(hint) ? count + 1 : count), 0);
-  return hit >= 2;
+  return hit >= 2 || (hit >= 1 && text.trim().length <= 32);
 }
 
 function isLikelyChatUiText(text: string): boolean {
@@ -1284,6 +1284,104 @@ export class NotebookLMAdapter {
     }
   }
 
+  private isMeaningfulSourceBody(source: SourceRecord, text: string): boolean {
+    const cleaned = this.cleanExtractedBody(text);
+    if (cleaned.length < 80) return false;
+    if (this.looksLikeUiOnlyText(cleaned)) return false;
+    if (isLikelySourceControlText(cleaned)) return false;
+    if (isLikelyChatUiText(cleaned)) return false;
+    const titleKey = this.normalizeSourceKey(source.title);
+    const bodyKey = this.normalizeSourceKey(cleaned);
+    if (!bodyKey) return false;
+    if (titleKey && bodyKey === titleKey) return false;
+    return true;
+  }
+
+  private findOpenActionInContainer(container: ParentNode): HTMLElement | null {
+    const openHints = ['開く', 'open', 'view', '表示'];
+    const candidates = Array.from(container.querySelectorAll<HTMLElement>('[role="menuitem"], [role="option"], button, [role="button"], a'));
+    for (const node of candidates) {
+      if (!isVisible(node)) continue;
+      if (isAssistantUiNode(node)) continue;
+      const label = `${readElementText(node)} ${(node.getAttribute('aria-label') || '').trim()}`.toLowerCase();
+      if (!label) continue;
+      if (containsAny(label, ['delete', 'remove', '削除'])) continue;
+      if (openHints.some((hint) => label.includes(hint.toLowerCase()))) {
+        return node;
+      }
+    }
+    return null;
+  }
+
+  private findDetailDialogCandidates(source: SourceRecord): HTMLElement[] {
+    const dialogs = queryAllDeep<HTMLElement>(document, '[role="dialog"], [aria-modal="true"]')
+      .filter((node) => isVisible(node))
+      .filter((node) => !isAssistantUiNode(node));
+
+    const titleKey = this.normalizeSourceKey(source.title);
+    return dialogs.filter((dialog) => {
+      const text = this.cleanExtractedBody(readElementText(dialog));
+      if (text.length < 60) return false;
+      if (NOTEBOOKLM_SELECTORS.sourceDialogTextHints.some((hint) => text.toLowerCase().includes(hint.toLowerCase()))) return false;
+      if (titleKey && !this.normalizeSourceKey(text).includes(titleKey)) return false;
+      return true;
+    });
+  }
+
+  private closeDialog(dialog: HTMLElement): void {
+    const closeButton = queryFirstVisible<HTMLElement>(
+      [
+        'button[aria-label*="Close"]',
+        'button[aria-label*="close"]',
+        'button[aria-label*="閉じる"]'
+      ],
+      dialog
+    );
+    if (closeButton) {
+      closeButton.click();
+      return;
+    }
+    dialog.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
+  }
+
+  private async tryOpenSourceDetailAndExtract(source: SourceRecord): Promise<string> {
+    const live = (await this.findLiveSourceRecord(source)) ?? source;
+    const card = live.cardEl;
+    if (!this.isConnectedVisible(card)) return '';
+
+    this.revealSourceCardActions(card);
+    await wait(120);
+
+    let openTrigger = this.findButtonByHints(card, ['開く', 'open', 'view']);
+    if (!openTrigger) {
+      const menuButton = this.findSourceActionMenuButton(card);
+      if (menuButton) {
+        menuButton.click();
+        await wait(160);
+        const menu = this.findVisibleMenuContainer();
+        if (menu) {
+          openTrigger = this.findOpenActionInContainer(menu);
+        }
+      }
+    }
+
+    if (!openTrigger) return '';
+
+    openTrigger.click();
+    await wait(260);
+
+    const dialogs = this.findDetailDialogCandidates(source);
+    if (dialogs.length === 0) {
+      return '';
+    }
+
+    const dialog = dialogs[0];
+    const text = this.cleanExtractedBody(readElementText(dialog));
+    this.closeDialog(dialog);
+    await wait(120);
+    return text;
+  }
+
   private extractSourceDetailText(source: SourceRecord): string {
     const isSourceImportUiText = (text: string): boolean => {
       const lowered = text.toLowerCase();
@@ -1741,12 +1839,21 @@ export class NotebookLMAdapter {
       }
 
       const detailText = this.extractSourceDetailText(live);
-      const bodyCandidate = this.cleanExtractedBody(detailText);
+      let bodyCandidate = this.cleanExtractedBody(detailText);
       const fallbackBody = this.cleanExtractedBody(source.body);
+
+      if (!this.isMeaningfulSourceBody(source, bodyCandidate)) {
+        const openedDetail = await this.tryOpenSourceDetailAndExtract(source);
+        if (this.isMeaningfulSourceBody(source, openedDetail)) {
+          bodyCandidate = this.cleanExtractedBody(openedDetail);
+        }
+      }
 
       detailed.push({
         ...source,
-        body: bodyCandidate.length >= Math.max(120, fallbackBody.length) ? bodyCandidate : fallbackBody
+        body: this.isMeaningfulSourceBody(source, bodyCandidate)
+          ? bodyCandidate
+          : fallbackBody
       });
 
       await wait(90);
