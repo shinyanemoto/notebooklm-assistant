@@ -120,15 +120,17 @@ export class NotebookLMAdapter {
 
     if (type === 'url') {
       for (const candidate of candidates) {
-        if (this.isWebSearchInput(candidate)) continue;
         if (candidate instanceof HTMLInputElement && candidate.type === 'url') return candidate;
         const text = this.fieldText(candidate);
-        if (containsAny(text, ['url', 'リンク', 'link', 'website', 'ウェブサイト', 'http'])) {
+        if (containsAny(text, ['url', 'リンク', 'link', 'website', 'ウェブサイト', 'http', '検索', 'search web'])) {
           return candidate;
         }
       }
 
-      // Last fallback: web search style input can still resolve URL source in some NotebookLM builds.
+      for (const candidate of candidates) {
+        if (this.isWebSearchInput(candidate)) return candidate;
+      }
+
       for (const candidate of candidates) {
         if (candidate instanceof HTMLInputElement) return candidate;
       }
@@ -160,7 +162,23 @@ export class NotebookLMAdapter {
     input.dispatchEvent(new Event('change', { bubbles: true }));
   }
 
-  private findSubmitButton(container: ParentNode): HTMLElement | null {
+  private triggerEnterSubmit(input: HTMLTextAreaElement | HTMLInputElement | HTMLElement): void {
+    input.focus();
+    const events: Array<'keydown' | 'keypress' | 'keyup'> = ['keydown', 'keypress', 'keyup'];
+    for (const eventName of events) {
+      input.dispatchEvent(
+        new KeyboardEvent(eventName, {
+          key: 'Enter',
+          code: 'Enter',
+          keyCode: 13,
+          which: 13,
+          bubbles: true
+        })
+      );
+    }
+  }
+
+  private findSubmitButton(container: ParentNode, input?: HTMLElement | null): HTMLElement | null {
     const selectorHit = queryFirstVisible<HTMLElement>(NOTEBOOKLM_SELECTORS.submitSourceButtons, container);
     if (selectorHit) return selectorHit;
 
@@ -174,6 +192,19 @@ export class NotebookLMAdapter {
     if (byText) return byText;
 
     const buttons = this.findButtons(container).filter((button) => !(button as HTMLButtonElement).disabled);
+    const iconOnly = buttons.filter((button) => !button.innerText.trim() && !!button.querySelector('svg, [data-icon]'));
+    if (input && iconOnly.length > 0) {
+      const inputRect = input.getBoundingClientRect();
+      const near = iconOnly.find((button) => {
+        const rect = button.getBoundingClientRect();
+        const sameRow = Math.abs(rect.top - inputRect.top) < 80;
+        const toRight = rect.left >= inputRect.left;
+        return sameRow && toRight;
+      });
+      if (near) return near;
+    }
+
+    if (iconOnly.length === 1) return iconOnly[0];
     if (buttons.length === 1) return buttons[0];
 
     return null;
@@ -259,6 +290,12 @@ export class NotebookLMAdapter {
 
   private async fillInputAndSubmit(container: HTMLElement, payload: QuickAddPayload): Promise<boolean> {
     const value = this.makePayloadText(payload);
+
+    if (payload.type !== 'url') {
+      const imported = await this.tryClipboardTextImport(container, value);
+      if (imported) return true;
+    }
+
     const input = this.findBestInput(container, payload.type);
 
     if (!input) {
@@ -271,12 +308,21 @@ export class NotebookLMAdapter {
     this.setElementValue(input, value);
     await wait(140);
 
-    const submit = this.findSubmitButton(container);
+    this.triggerEnterSubmit(input);
+    await wait(100);
+
+    const submit = this.findSubmitButton(container, input);
     if (!submit) {
+      // Some NotebookLM variants accept Enter without a visible submit button.
+      const dialogAfterEnter = this.findSourceDialogContainer();
+      if (!dialogAfterEnter) {
+        return true;
+      }
       return false;
     }
 
     submit.click();
+    await wait(120);
     return true;
   }
 

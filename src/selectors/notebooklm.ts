@@ -44,10 +44,29 @@ export const NOTEBOOKLM_SELECTORS = {
   submitSourceButtons: [
     'button[data-testid*="create"]',
     'button[data-testid*="add"]',
+    'button[aria-label*="検索"]',
+    'button[aria-label*="Search"]',
+    'button[aria-label*="送信"]',
+    'button[aria-label*="Submit"]',
     '[class*="submit"] button',
     'button[type="submit"]'
   ],
-  submitSourceTextHints: ['create source', 'add source', 'create', 'add', 'save', '作成', '追加', '保存'],
+  submitSourceTextHints: [
+    'create source',
+    'add source',
+    'create',
+    'add',
+    'save',
+    'search',
+    'submit',
+    'import',
+    '作成',
+    '追加',
+    '保存',
+    '検索',
+    '送信',
+    '取り込む'
+  ],
 
   openSourceListButtons: [
     'button[data-testid*="sources"]',
