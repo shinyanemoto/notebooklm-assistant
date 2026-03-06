@@ -59,10 +59,11 @@ function getById<T extends HTMLElement>(id: string): T {
 }
 
 function setStatus(message: string, level: 'info' | 'success' | 'error' = 'info'): void {
-  const el = document.getElementById(ids.status);
-  if (!el) return;
-  el.textContent = message;
-  el.setAttribute('data-level', level);
+  const targets = [document.getElementById(ids.status), document.getElementById('nlm-quick-status')].filter(Boolean) as HTMLElement[];
+  for (const el of targets) {
+    el.textContent = message;
+    el.setAttribute('data-level', level);
+  }
 }
 
 function sanitizePathPrefix(prefix: string): string {
@@ -511,6 +512,11 @@ function setupFabAutoPosition(): void {
 function showQuickModal(prefill?: { content?: string; title?: string; memo?: string }): void {
   const modal = getById<HTMLDivElement>(ids.quickModal);
   modal.style.display = 'flex';
+  const quickStatus = document.getElementById('nlm-quick-status');
+  if (quickStatus) {
+    quickStatus.textContent = '待機中';
+    quickStatus.setAttribute('data-level', 'info');
+  }
 
   if (prefill?.content) {
     getById<HTMLTextAreaElement>('nlm-qa-input').value = prefill.content;
@@ -612,6 +618,7 @@ function renderShell(): void {
           <button id="nlm-qa-cancel">キャンセル</button>
           <button id="nlm-qa-submit" class="primary">実行</button>
         </div>
+        <div id="nlm-quick-status" class="nlm-status" data-level="info">待機中</div>
       </div>
     </div>
 

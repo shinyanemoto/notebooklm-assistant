@@ -17,7 +17,17 @@ export const NOTEBOOKLM_SELECTORS = {
     '[class*="source-dialog"]',
     '[class*="sourceModal"]'
   ],
-  sourceDialogTextHints: ['add source', 'add sources', 'ソースを追加', '新しいソース'],
+  sourceDialogTextHints: [
+    'add source',
+    'add sources',
+    'ソースを追加',
+    '新しいソース',
+    'ウェブで新しいソースを検索',
+    'またはファイルをドロップ',
+    'ファイルをアップロード',
+    'コピーしたテキスト',
+    'ウェブサイト'
+  ],
   sourceModeButtons: [
     'button[data-testid*="source-type"]',
     'button[data-testid*="import-type"]',
