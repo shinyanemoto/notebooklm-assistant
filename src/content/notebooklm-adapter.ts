@@ -1167,6 +1167,133 @@ export class NotebookLMAdapter {
     return urlEl?.href;
   }
 
+  private sourceRecordKey(source: SourceRecord): string {
+    if (source.id) return `id:${source.id}`;
+    if (source.domPathHint) return `path:${source.domPathHint}`;
+    const title = this.normalizeSourceKey(source.title).slice(0, 120);
+    const body = this.normalizeSourceKey(source.body).slice(0, 120);
+    const url = source.url || '';
+    return `meta:${title}::${url}::${body}`;
+  }
+
+  private mergeSourceRecords(target: Map<string, SourceRecord>, records: SourceRecord[]): void {
+    for (const record of records) {
+      const key = this.sourceRecordKey(record);
+      const existing = target.get(key);
+      if (!existing) {
+        target.set(key, record);
+        continue;
+      }
+
+      const preferRecord = (!existing.deleteButtonEl && !!record.deleteButtonEl) ||
+        record.body.length > existing.body.length;
+      if (preferRecord) {
+        target.set(key, record);
+      }
+    }
+  }
+
+  private isScrollableElement(el: HTMLElement): boolean {
+    const style = window.getComputedStyle(el);
+    const overflow = `${style.overflowY} ${style.overflow}`.toLowerCase();
+    const scrollable = /(auto|scroll|overlay)/.test(overflow);
+    return scrollable && el.scrollHeight > el.clientHeight + 10;
+  }
+
+  private findScrollableAncestor(el: HTMLElement | null): HTMLElement | null {
+    let current: HTMLElement | null = el;
+    for (let depth = 0; current && depth < 10; depth += 1) {
+      if (this.isScrollableElement(current)) {
+        return current;
+      }
+      current = current.parentElement;
+    }
+    return null;
+  }
+
+  private findSourceScrollContainer(): HTMLElement | null {
+    const sourceContainer = this.findSourceListContainer();
+    const cards = this.collectSourceCards();
+    const firstCard = cards[0]?.cardEl ?? null;
+
+    const candidates = [
+      this.findScrollableAncestor(firstCard),
+      this.findScrollableAncestor(sourceContainer),
+      sourceContainer
+    ].filter(Boolean) as HTMLElement[];
+
+    for (const candidate of candidates) {
+      if (this.isScrollableElement(candidate)) {
+        return candidate;
+      }
+    }
+
+    return null;
+  }
+
+  private async collectAllSourceCardsWithScroll(): Promise<SourceRecord[]> {
+    const collected = new Map<string, SourceRecord>();
+    const collect = (): void => {
+      this.mergeSourceRecords(collected, this.collectSourceCards());
+    };
+
+    collect();
+    const scroller = this.findSourceScrollContainer();
+    if (!scroller) {
+      return Array.from(collected.values());
+    }
+
+    const originalTop = scroller.scrollTop;
+    try {
+      scroller.scrollTop = 0;
+      scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
+      await wait(220);
+      collect();
+
+      let stagnant = 0;
+      let prevTop = -1;
+      let prevCount = -1;
+
+      for (let i = 0; i < 72; i += 1) {
+        const step = Math.max(180, Math.floor(scroller.clientHeight * 0.75));
+        const maxTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+        const nextTop = Math.min(maxTop, scroller.scrollTop + step);
+
+        if (nextTop !== scroller.scrollTop) {
+          scroller.scrollTop = nextTop;
+          scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
+        }
+
+        await wait(220);
+        collect();
+
+        const nowTop = scroller.scrollTop;
+        const nowCount = collected.size;
+        const atBottom = nowTop >= maxTop - 2;
+        if (nowTop === prevTop && nowCount === prevCount) {
+          stagnant += 1;
+        } else {
+          stagnant = 0;
+        }
+
+        prevTop = nowTop;
+        prevCount = nowCount;
+
+        if (atBottom && stagnant >= 3) {
+          break;
+        }
+        if (stagnant >= 10) {
+          break;
+        }
+      }
+    } finally {
+      scroller.scrollTop = originalTop;
+      scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
+    }
+
+    return Array.from(collected.values());
+  }
+
   private collectSourceCards(): SourceRecord[] {
     const container = this.findSourceListContainer();
     if (container) {
@@ -1384,7 +1511,7 @@ export class NotebookLMAdapter {
         await this.ensureSourcesTabVisible();
       }
 
-      results = this.collectSourceCards();
+      results = await this.collectAllSourceCardsWithScroll();
       if (results.length > 0) {
         break;
       }

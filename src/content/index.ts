@@ -86,8 +86,19 @@ async function sendRuntimeMessage(message: RuntimeMessage): Promise<RuntimeRespo
 function dedupeSources(sources: SourceRecord[]): SourceRecord[] {
   const map = new Map<string, SourceRecord>();
   for (const source of sources) {
-    const key = `${source.title}::${source.body.slice(0, 80)}`;
-    if (!map.has(key)) {
+    const key = [
+      source.id || '',
+      source.domPathHint || '',
+      source.title || '',
+      source.url || '',
+      source.body.slice(0, 80)
+    ].join('::');
+    const existing = map.get(key);
+    if (!existing) {
+      map.set(key, source);
+      continue;
+    }
+    if (!existing.deleteButtonEl && source.deleteButtonEl) {
       map.set(key, source);
     }
   }
@@ -108,7 +119,10 @@ function updateDeleteButtonState(): void {
   const deleteBtn = getById<HTMLButtonElement>(ids.deleteButton);
   const targets = deleteTargets();
   const backedUp = targets.every((t) => state.lastBackupIds.has(t.id));
-  deleteBtn.disabled = targets.length === 0 || !backedUp;
+  deleteBtn.disabled = targets.length === 0;
+  deleteBtn.textContent = backedUp
+    ? '一括削除（バックアップ済み対象のみ）'
+    : '一括削除（先にバックアップ実行）';
 }
 
 function renderSourceList(): void {
@@ -156,7 +170,9 @@ async function refreshSources(): Promise<void> {
     state.sources = dedupeSources(scanned);
     state.selectedIds = new Set(state.sources.map((s) => s.id));
     renderSourceList();
-    setStatus(`ソースを${state.sources.length}件読み込みました。`, 'success');
+    const deduped = scanned.length - state.sources.length;
+    const extra = deduped > 0 ? `（重複整理 ${deduped} 件）` : '';
+    setStatus(`ソースを${state.sources.length}件読み込みました。${extra}`, 'success');
   } catch (error) {
     logger.error('content', error);
     setStatus(`ソース読み込み失敗: ${(error as Error).message}`, 'error');
