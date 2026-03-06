@@ -303,43 +303,42 @@ async function executeQuickAdd(): Promise<void> {
     return;
   }
 
-  setStatus('NotebookLMへ追加中...', 'info');
-  const result = await adapter.addSource(payload);
-  if (result.success) {
-    setStatus('追加フローを実行しました。', 'success');
-    hideQuickModal();
-    return;
-  }
-
   if (payload.type === 'clipboardImage') {
-    adapter.closeSourceDialog();
-    const fallbackResult = await adapter.addSource({
+    setStatus('画像メタ情報をテキストソースとして追加中...', 'info');
+    const textFallbackPayload: QuickAddPayload = {
       type: 'text',
       title: payload.title || 'Clipboard Image Fallback',
       memo: payload.memo,
       content: buildClipboardImageTextFallback(payload),
       sourceUrl: payload.sourceUrl
-    });
+    };
 
+    const fallbackResult = await adapter.addSource(textFallbackPayload);
     if (fallbackResult.success) {
-      setStatus('画像の直接追加に失敗したため、画像メタ情報をテキストソースとして追加しました。', 'success');
+      setStatus('画像は画像メタ情報のテキストソースとして追加しました。', 'success');
       hideQuickModal();
       return;
     }
 
-    const clipboardPrepared = payload.imageDataUrl ? await writeImageDataUrlToClipboard(payload.imageDataUrl) : false;
-    const dialogOpened = await adapter.openSourceDialog();
-    const uploadPickerOpened = (!clipboardPrepared && dialogOpened) ? await adapter.prepareManualImageUpload() : false;
-    const instructions = [
-      `画像の自動追加に失敗: ${result.reason || '不明なエラー'}`,
-      dialogOpened ? 'NotebookLMのソース追加ダイアログを開きました。' : 'NotebookLMのソース追加ダイアログを開けませんでした。',
-      clipboardPrepared
-        ? '画像をクリップボードへ再セットしました。ダイアログ上で Ctrl/Cmd+V して、挿入（または追加）を押してください。'
-        : (uploadPickerOpened
-          ? 'クリップボード再セット不可のため、ファイル選択を開きました。手元の画像ファイルを選択して取り込んでください。'
-          : '画像のクリップボード再セットに失敗しました。ダイアログ上で手動アップロードしてください。')
-    ];
-    setStatus(instructions.join(' '), 'error');
+    if (fallbackResult.fallbackText) {
+      try {
+        await navigator.clipboard.writeText(fallbackResult.fallbackText);
+        setStatus(`画像テキスト化の自動追加に失敗: ${fallbackResult.reason} 本文をクリップボードへコピーしました。`, 'error');
+      } catch {
+        setStatus(`画像テキスト化の追加失敗: ${fallbackResult.reason || '不明なエラー'}`, 'error');
+      }
+      return;
+    }
+
+    setStatus(`画像テキスト化の追加失敗: ${fallbackResult.reason || '不明なエラー'}`, 'error');
+    return;
+  }
+
+  setStatus('NotebookLMへ追加中...', 'info');
+  const result = await adapter.addSource(payload);
+  if (result.success) {
+    setStatus('追加フローを実行しました。', 'success');
+    hideQuickModal();
     return;
   }
 
