@@ -244,6 +244,16 @@ function formatTimestampToSecond(now: Date = new Date()): string {
   return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
 }
 
+function timestampForFilename(now: Date = new Date()): string {
+  const yyyy = now.getFullYear();
+  const mm = `${now.getMonth() + 1}`.padStart(2, '0');
+  const dd = `${now.getDate()}`.padStart(2, '0');
+  const hh = `${now.getHours()}`.padStart(2, '0');
+  const mi = `${now.getMinutes()}`.padStart(2, '0');
+  const ss = `${now.getSeconds()}`.padStart(2, '0');
+  return `${yyyy}${mm}${dd}_${hh}${mi}${ss}`;
+}
+
 function compactTimestamp(timestamp: string): string {
   return timestamp.replaceAll('-', '').replaceAll(':', '').replaceAll(' ', '_');
 }
@@ -274,6 +284,16 @@ async function revealDownloadedFile(downloadId: number): Promise<void> {
   }
 }
 
+function sanitizeFilenameStem(text: string): string {
+  const safe = text
+    .normalize('NFKC')
+    .replace(/[\\/:*?"<>|]+/g, '_')
+    .replace(/\s+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return safe.slice(0, 48) || 'merged_source';
+}
+
 function buildClipboardImageUploadMeta(payload: QuickAddPayload, timestamp: string, downloadInfo: ImageDownloadInfo): string {
   const presumedPath = `~/Downloads/${downloadInfo.relativePath}`;
   return [
@@ -287,6 +307,24 @@ function buildClipboardImageUploadMeta(payload: QuickAddPayload, timestamp: stri
     payload.title ? `- タイトル: ${payload.title}` : '- タイトル: （未設定）',
     payload.memo ? `- メモ: ${payload.memo}` : '- メモ: （なし）'
   ].join('\n');
+}
+
+async function downloadMarkdownFile(filename: string, content: string): Promise<{ downloadId: number }> {
+  const response = await sendRuntimeMessage({
+    type: 'DOWNLOAD_MARKDOWN',
+    payload: {
+      filename,
+      content
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(response.error || 'Markdownファイル保存に失敗しました');
+  }
+  if (typeof response.downloadId !== 'number') {
+    throw new Error('ダウンロードIDの取得に失敗しました');
+  }
+  return { downloadId: response.downloadId };
 }
 
 function buildQuickPayload(timestamp: string): QuickAddPayload {
@@ -366,7 +404,7 @@ async function executeQuickAdd(): Promise<void> {
 
     hideQuickModal();
     setStatus('NotebookLMの「ファイルをアップロード」を起動中...', 'info');
-    const prepared = await adapter.prepareManualImageUpload();
+    const prepared = await adapter.prepareManualFileUpload();
     if (prepared) {
       const copiedLabel = copiedMeta ? ' メタデータはクリップボードにコピー済みです。' : '';
       setStatus(
@@ -504,6 +542,54 @@ async function addMergedSource(): Promise<void> {
   }
 
   setStatus(`統合追加失敗: ${result.reason || '不明なエラー'}`, 'error');
+}
+
+async function exportMergedForManualUpload(): Promise<void> {
+  const targets = selectedSources();
+  if (targets.length === 0) {
+    setStatus('統合対象ソースを選択してください。', 'error');
+    return;
+  }
+
+  const mode = getById<HTMLSelectElement>('nlm-merge-mode').value as MergeMode;
+  const titleInput = getById<HTMLInputElement>('nlm-merge-title').value.trim() || `統合ソース_${new Date().toISOString().slice(0, 10)}`;
+  const notes = getById<HTMLTextAreaElement>('nlm-merge-notes').value.trim();
+  const merged = mergeSources(targets, mode, state.settings.structuredMergeTemplate, titleInput, notes);
+  getById<HTMLTextAreaElement>(ids.mergePreview).value = merged.markdown;
+
+  const backedUp = await createBackup('before-merge', targets, merged.markdown);
+  if (!backedUp) return;
+
+  const relativePath = withPrefix(
+    state.settings.backupPathPrefix,
+    `notebooklm_merged_${sanitizeFilenameStem(merged.title)}_${timestampForFilename()}.md`
+  );
+
+  setStatus('統合Markdownを保存中...', 'info');
+  let downloadId = -1;
+  try {
+    const result = await downloadMarkdownFile(relativePath, merged.markdown);
+    downloadId = result.downloadId;
+  } catch (error) {
+    setStatus(`統合Markdown保存失敗: ${(error as Error).message}`, 'error');
+    return;
+  }
+
+  try {
+    await revealDownloadedFile(downloadId);
+  } catch (error) {
+    logger.warn('content', 'failed to reveal merged markdown file', error);
+  }
+
+  hideManagerModal();
+  setStatus('NotebookLMの「ファイルをアップロード」を起動中...', 'info');
+  const opened = await adapter.prepareManualFileUpload();
+  if (opened) {
+    setStatus(`統合ファイルを保存しました。ファイル選択で ${relativePath} を選択してください。`, 'success');
+    return;
+  }
+
+  setStatus(`統合ファイルを保存しました。手動で「ファイルをアップロード」から ${relativePath} を選択してください。`, 'error');
 }
 
 async function executeDelete(): Promise<void> {
@@ -813,6 +899,7 @@ function renderShell(): void {
           <button id="nlm-backup-selected">選択ソースをバックアップ</button>
           <button id="nlm-preview-merge">統合プレビュー生成</button>
           <button id="nlm-add-merged" class="primary">統合ソースを追加（事前バックアップ付き）</button>
+          <button id="nlm-export-merged-file">統合をMD保存→ファイル追加導線</button>
         </div>
 
         <div class="nlm-row">
@@ -931,6 +1018,10 @@ function bindEvents(): void {
 
   getById<HTMLButtonElement>('nlm-add-merged').addEventListener('click', async () => {
     await addMergedSource();
+  });
+
+  getById<HTMLButtonElement>('nlm-export-merged-file').addEventListener('click', async () => {
+    await exportMergedForManualUpload();
   });
 
   getById<HTMLSelectElement>(ids.deleteTarget).addEventListener('change', updateDeleteButtonState);

@@ -1099,7 +1099,7 @@ export class NotebookLMAdapter {
     return true;
   }
 
-  async prepareManualImageUpload(): Promise<boolean> {
+  async prepareManualFileUpload(): Promise<boolean> {
     if (!this.isNotebookDocumentPage()) return false;
 
     const flow = await this.ensureSourceFlowReady();
@@ -1140,6 +1140,10 @@ export class NotebookLMAdapter {
     } catch {
       return false;
     }
+  }
+
+  async prepareManualImageUpload(): Promise<boolean> {
+    return this.prepareManualFileUpload();
   }
 
   async scanSources(): Promise<SourceRecord[]> {
