@@ -465,6 +465,43 @@ export class NotebookLMAdapter {
     }
   }
 
+  private async writeImageToClipboard(payload: QuickAddPayload): Promise<boolean> {
+    try {
+      if (!payload.imageDataUrl || !navigator.clipboard || !navigator.clipboard.write) return false;
+      const ClipboardItemCtor = (window as unknown as {
+        ClipboardItem?: new (items: Record<string, Blob>) => ClipboardItem;
+      }).ClipboardItem;
+      if (!ClipboardItemCtor) return false;
+
+      const response = await fetch(payload.imageDataUrl);
+      const blob = await response.blob();
+      const mime = blob.type || 'image/png';
+      const item = new ClipboardItemCtor({ [mime]: blob });
+      await navigator.clipboard.write([item]);
+      return true;
+    } catch (error) {
+      logger.warn('adapter', 'failed to write image clipboard', error);
+      return false;
+    }
+  }
+
+  private dispatchPasteShortcut(target: HTMLElement): void {
+    const events: Array<'keydown' | 'keyup'> = ['keydown', 'keyup'];
+    for (const eventName of events) {
+      target.dispatchEvent(
+        new KeyboardEvent(eventName, {
+          key: 'v',
+          code: 'KeyV',
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          ctrlKey: true,
+          metaKey: true
+        })
+      );
+    }
+  }
+
   private async waitForFileInput(container: HTMLElement, timeoutMs = 2400): Promise<HTMLInputElement | null> {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
@@ -535,6 +572,33 @@ export class NotebookLMAdapter {
     for (const target of pasteTargets) {
       const pasted = await this.pasteFileOnTarget(target, imageFile);
       if (!pasted) continue;
+
+      const submit = this.findSubmitButton(this.findSourceDialogContainer() ?? activeDialog);
+      if (submit) {
+        submit.click();
+        await wait(180);
+      }
+      if (await this.waitForDialogClosed(9000)) {
+        return true;
+      }
+    }
+
+    // Strategy 4: clipboard write + native paste command attempt.
+    const clipboardPrepared = await this.writeImageToClipboard(payload);
+    if (clipboardPrepared) {
+      const target = (this.findBestInput(activeDialog, 'text') as HTMLElement | null) ??
+        this.findDropTargets(activeDialog)[0] ??
+        activeDialog;
+      target.focus?.();
+      target.click?.();
+
+      try {
+        document.execCommand('paste');
+      } catch {
+        // no-op
+      }
+      this.dispatchPasteShortcut(target);
+      await wait(240);
 
       const submit = this.findSubmitButton(this.findSourceDialogContainer() ?? activeDialog);
       if (submit) {
