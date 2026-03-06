@@ -1018,8 +1018,7 @@ export class NotebookLMAdapter {
       '[aria-label*="Sources"]',
       '[aria-label*="ソース"]',
       'aside',
-      'section',
-      'div'
+      'section'
     ];
 
     const hints = ['sources', 'source list', 'ソース', 'source'];
@@ -1151,15 +1150,43 @@ export class NotebookLMAdapter {
   }
 
   private sourceTitleFromCard(card: HTMLElement): string {
+    const bannedExactTitles = new Set([
+      '削除',
+      '開く',
+      'その他',
+      'menu',
+      'more',
+      'chat',
+      'studio',
+      'ソース',
+      'sources'
+    ]);
+    const normalizeTitle = (text: string): string => {
+      const clean = text
+        .replace(/\s+/g, ' ')
+        .replace(/more[_\s-]*vert(description)?/gi, '')
+        .replace(/keyboard_arrow_[a-z]+/gi, '')
+        .replace(/\b(language|description)\b/gi, '')
+        .trim();
+      if (clean.length < 2 || clean.length > 180) return '';
+      const lower = clean.toLowerCase();
+      if (bannedExactTitles.has(clean) || bannedExactTitles.has(lower)) return '';
+      if (/^(delete|remove|open|menu|more)$/i.test(clean)) return '';
+      if (/^[a-z_]+$/.test(clean) && clean.length < 14) return '';
+      return clean;
+    };
+
     const candidates = Array.from(card.querySelectorAll<HTMLElement>(NOTEBOOKLM_SELECTORS.sourceTitle.join(',')))
       .filter((el) => readElementText(el).length > 0);
     for (const el of candidates) {
-      const text = readElementText(el);
-      if (text.length < 2 || text.length > 180) continue;
-      if (containsAny(text, ['delete', 'remove', 'open', 'menu', 'more', '削除', '開く', 'その他'])) continue;
+      const text = normalizeTitle(readElementText(el));
+      if (!text) continue;
       return text;
     }
-    return readElementText(card).slice(0, 80);
+
+    const fallbackLine = readElementText(card).split('\n').map((line) => line.trim()).find(Boolean) || '';
+    const fallback = normalizeTitle(fallbackLine);
+    return fallback;
   }
 
   private sourceBodyFromCard(card: HTMLElement): string {
@@ -1215,6 +1242,14 @@ export class NotebookLMAdapter {
   }
 
   private extractSourceDetailText(source: SourceRecord): string {
+    const isSourceImportUiText = (text: string): boolean => {
+      const lowered = text.toLowerCase();
+      const hitCount = NOTEBOOKLM_SELECTORS.sourceDialogTextHints.reduce((count, hint) => {
+        return lowered.includes(hint.toLowerCase()) ? count + 1 : count;
+      }, 0);
+      return hitCount >= 2;
+    };
+
     const titleKey = this.normalizeSourceKey(source.title);
     const sourceListContainer = this.findSourceListContainer();
     const cardRect = source.cardEl.getBoundingClientRect();
@@ -1249,6 +1284,7 @@ export class NotebookLMAdapter {
       const text = this.cleanExtractedBody(readElementText(node));
       if (text.length < 80) continue;
       if (this.looksLikeUiOnlyText(text)) continue;
+      if (isSourceImportUiText(text)) continue;
 
       const rect = node.getBoundingClientRect();
       let score = 0;
@@ -1642,6 +1678,8 @@ export class NotebookLMAdapter {
     const base = await this.scanSources();
     if (base.length === 0) return [];
 
+    this.closeSourceDialog();
+    await wait(120);
     await this.ensureSourcesTabVisible();
     await this.ensureSourceListVisible();
 

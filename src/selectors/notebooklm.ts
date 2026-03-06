@@ -101,7 +101,7 @@ export const NOTEBOOKLM_SELECTORS = {
     'li[role="listitem"]',
     'div[role="listitem"]'
   ],
-  sourceTitle: ['h2', 'h3', '[data-testid*="title"]', '[class*="title"]', '[aria-label*="title"]', 'strong', '[role="heading"]', 'button', 'a'],
+  sourceTitle: ['h2', 'h3', '[data-testid*="title"]', '[class*="title"]', '[aria-label*="title"]', 'strong', '[role="heading"]', 'a'],
   sourceBody: ['[class*="content"]', '[class*="snippet"]', 'p', '[data-testid*="body"]'],
   sourceUrl: ['a[href^="http"]'],
 
