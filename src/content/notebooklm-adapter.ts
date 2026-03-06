@@ -275,6 +275,99 @@ export class NotebookLMAdapter {
     return false;
   }
 
+  private sanitizeFilenameBase(name: string): string {
+    const safe = name.toLowerCase().replace(/[^a-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '');
+    return safe || 'clipboard_image';
+  }
+
+  private async buildClipboardImageFile(payload: QuickAddPayload): Promise<File | null> {
+    if (!payload.imageDataUrl) return null;
+    try {
+      const response = await fetch(payload.imageDataUrl);
+      const blob = await response.blob();
+      const mime = blob.type || 'image/png';
+      const ext = (mime.split('/')[1] || 'png').replace(/[^a-z0-9]+/gi, '').toLowerCase() || 'png';
+      const base = this.sanitizeFilenameBase(payload.title || 'clipboard_image');
+      return new File([blob], `${base}.${ext}`, { type: mime });
+    } catch (error) {
+      logger.warn('adapter', 'failed to build clipboard image file', error);
+      return null;
+    }
+  }
+
+  private findBestFileInput(container: ParentNode): HTMLInputElement | null {
+    const inputs = Array.from(container.querySelectorAll<HTMLInputElement>('input[type="file"]'))
+      .filter((input) => !input.disabled);
+    if (inputs.length === 0) return null;
+
+    const imageInput = inputs.find((input) => (input.accept || '').toLowerCase().includes('image'));
+    return imageInput || inputs[0];
+  }
+
+  private setFilesToInput(input: HTMLInputElement, file: File): boolean {
+    try {
+      const transfer = new DataTransfer();
+      transfer.items.add(file);
+      input.files = transfer.files;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    } catch (error) {
+      logger.warn('adapter', 'failed to inject file into input', error);
+      return false;
+    }
+  }
+
+  private async waitForFileInput(container: HTMLElement, timeoutMs = 2400): Promise<HTMLInputElement | null> {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const input = this.findBestFileInput(container) || this.findBestFileInput(document);
+      if (input) return input;
+      await wait(120);
+    }
+    return null;
+  }
+
+  private async tryClipboardImageImport(container: HTMLElement, payload: QuickAddPayload): Promise<boolean> {
+    if (payload.type !== 'clipboardImage') return false;
+    const imageFile = await this.buildClipboardImageFile(payload);
+    if (!imageFile) return false;
+
+    const fileModeButton = this.findButtonByHints(container, NOTEBOOKLM_SELECTORS.sourceModeTextHints.file);
+    if (fileModeButton) {
+      fileModeButton.click();
+      await wait(220);
+    }
+
+    const dialog = await this.waitForSourceDialog(1400) ?? container;
+    const uploadButton = this.findButtonByHints(dialog, ['ファイルをアップロード', 'upload file', 'upload']);
+    if (uploadButton) {
+      uploadButton.click();
+      await wait(120);
+    }
+
+    const input = await this.waitForFileInput(dialog, 2600);
+    if (!input) {
+      logger.warn('adapter', 'file input not found for clipboard image');
+      return false;
+    }
+
+    const assigned = this.setFilesToInput(input, imageFile);
+    if (!assigned) {
+      return false;
+    }
+
+    await wait(180);
+    const activeDialog = this.findSourceDialogContainer() ?? dialog;
+    const submit = this.findSubmitButton(activeDialog);
+    if (submit) {
+      submit.click();
+      await wait(180);
+    }
+
+    return this.waitForDialogClosed(9000);
+  }
+
   private async tryClipboardTextImport(container: HTMLElement, text: string): Promise<boolean> {
     const modeButton = this.findButtonByHints(container, ['コピーしたテキスト', 'paste text', 'pasted text', 'copied text']);
     if (!modeButton) return false;
@@ -336,6 +429,12 @@ export class NotebookLMAdapter {
 
   private async fillInputAndSubmit(container: HTMLElement, payload: QuickAddPayload): Promise<boolean> {
     const value = this.makePayloadText(payload);
+
+    if (payload.type === 'clipboardImage') {
+      const imageImported = await this.tryClipboardImageImport(container, payload);
+      if (imageImported) return true;
+      logger.warn('adapter', 'clipboard image import failed; using copied-text fallback');
+    }
 
     if (payload.type !== 'url') {
       const imported = await this.tryClipboardTextImport(container, value);

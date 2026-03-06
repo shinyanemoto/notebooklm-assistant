@@ -433,22 +433,86 @@ async function executeDelete(): Promise<void> {
 function findSafetyNoticeElement(): HTMLElement | null {
   const hints = ['NotebookLMは不正確な場合があります', '回答は再確認してください', 'NotebookLM can make mistakes'];
   const nodes = Array.from(document.querySelectorAll<HTMLElement>('span, p, div'));
+  let best: { score: number; node: HTMLElement } | null = null;
   for (const node of nodes) {
     const text = (node.textContent || '').trim();
     if (!text) continue;
     if (hints.some((hint) => text.includes(hint))) {
       const rect = node.getBoundingClientRect();
       if (rect.width > 80 && rect.height > 8) {
-        return node;
+        const score = rect.top + rect.width * 0.01;
+        if (!best || score > best.score) {
+          best = { score, node };
+        }
       }
     }
   }
-  return null;
+  return best?.node ?? null;
+}
+
+function findChatComposerElement(): HTMLElement | null {
+  const candidates = Array.from(document.querySelectorAll<HTMLElement>('textarea, [contenteditable="true"], input[type="text"]'));
+  let best: { score: number; node: HTMLElement } | null = null;
+
+  for (const node of candidates) {
+    if (node.closest('#nlm-assistant-root')) continue;
+
+    const rect = node.getBoundingClientRect();
+    const style = window.getComputedStyle(node);
+    if (rect.width < 160 || rect.height < 20) continue;
+    if (style.display === 'none' || style.visibility === 'hidden') continue;
+
+    const text = [
+      node.getAttribute('placeholder') || '',
+      node.getAttribute('aria-label') || '',
+      node.getAttribute('data-placeholder') || ''
+    ].join(' ').toLowerCase();
+
+    const hint = ['入力を開始', 'start typing', 'message', 'chat'].some((keyword) => text.includes(keyword)) ? 1000 : 0;
+    const score = hint + rect.bottom;
+    if (!best || score > best.score) {
+      best = { score, node };
+    }
+  }
+
+  return best?.node ?? null;
+}
+
+function hasVisibleSourcePanelSearch(): boolean {
+  const sourceSearchHints = ['ウェブで新しいソースを検索', 'search web', 'web search'];
+  const fields = Array.from(document.querySelectorAll<HTMLElement>('input, textarea'));
+  return fields.some((field) => {
+    if (field.closest('#nlm-assistant-root')) return false;
+    const rect = field.getBoundingClientRect();
+    const style = window.getComputedStyle(field);
+    if (rect.width < 180 || rect.height < 20) return false;
+    if (style.display === 'none' || style.visibility === 'hidden') return false;
+    const text = `${field.getAttribute('placeholder') || ''} ${field.getAttribute('aria-label') || ''}`;
+    return sourceSearchHints.some((hint) => text.toLowerCase().includes(hint.toLowerCase()));
+  });
+}
+
+function isChatOnlyLayout(composer: HTMLElement | null): boolean {
+  if (!composer) return false;
+  const rect = composer.getBoundingClientRect();
+  if (rect.width / window.innerWidth < 0.58) return false;
+  return !hasVisibleSourcePanelSearch();
 }
 
 function positionFabWrap(): void {
   const wrap = document.getElementById(ids.fabWrap);
   if (!wrap) return;
+
+  const composer = findChatComposerElement();
+  if (isChatOnlyLayout(composer) && composer) {
+    const composerRect = composer.getBoundingClientRect();
+    const bottom = Math.max(20, window.innerHeight - composerRect.top + 8);
+    wrap.style.top = 'auto';
+    wrap.style.left = '16px';
+    wrap.style.right = 'auto';
+    wrap.style.bottom = `${Math.round(bottom)}px`;
+    return;
+  }
 
   const notice = findSafetyNoticeElement();
   if (notice) {
