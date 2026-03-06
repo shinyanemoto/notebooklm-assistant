@@ -916,6 +916,11 @@ export class NotebookLMAdapter {
     return { success: true };
   }
 
+  async openSourceDialog(): Promise<boolean> {
+    const flow = await this.ensureSourceFlowReady();
+    return !!(flow.ready && flow.container);
+  }
+
   async scanSources(): Promise<SourceRecord[]> {
     if (!this.isNotebookLMPage()) {
       return [];

@@ -188,6 +188,26 @@ async function readClipboardImage(): Promise<string> {
   throw new Error('クリップボード画像が見つかりません。');
 }
 
+async function writeImageDataUrlToClipboard(dataUrl: string): Promise<boolean> {
+  try {
+    const clipboard = navigator.clipboard;
+    const ClipboardItemCtor = (window as unknown as { ClipboardItem?: new (items: Record<string, Blob>) => ClipboardItem }).ClipboardItem;
+    if (!clipboard || !clipboard.write || !ClipboardItemCtor) {
+      return false;
+    }
+
+    const response = await fetch(dataUrl);
+    const blob = await response.blob();
+    const mime = blob.type || 'image/png';
+    const item = new ClipboardItemCtor({ [mime]: blob });
+    await clipboard.write([item]);
+    return true;
+  } catch (error) {
+    logger.warn('content', 'writeImageDataUrlToClipboard failed', error);
+    return false;
+  }
+}
+
 function updateImagePreview(): void {
   const preview = getById<HTMLImageElement>('nlm-qa-image-preview');
   const clearButton = getById<HTMLButtonElement>('nlm-qa-clear-image');
@@ -284,6 +304,20 @@ async function executeQuickAdd(): Promise<void> {
   if (result.success) {
     setStatus('追加フローを実行しました。', 'success');
     hideQuickModal();
+    return;
+  }
+
+  if (payload.type === 'clipboardImage') {
+    const dialogOpened = await adapter.openSourceDialog();
+    const clipboardPrepared = payload.imageDataUrl ? await writeImageDataUrlToClipboard(payload.imageDataUrl) : false;
+    const instructions = [
+      `画像の自動追加に失敗: ${result.reason || '不明なエラー'}`,
+      dialogOpened ? 'NotebookLMのソース追加ダイアログは開いています。' : 'NotebookLMのソース追加ダイアログを開けませんでした。',
+      clipboardPrepared
+        ? '画像をクリップボードへ再セットしました。ダイアログ上で Ctrl/Cmd+V して、挿入（または追加）を押してください。'
+        : '画像のクリップボード再セットに失敗しました。ダイアログ上で手動アップロードしてください。'
+    ];
+    setStatus(instructions.join(' '), 'error');
     return;
   }
 
