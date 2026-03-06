@@ -43,6 +43,23 @@ function isLikelySourceControlText(text: string): boolean {
   return hit >= 2;
 }
 
+function isLikelyChatUiText(text: string): boolean {
+  const lowered = text.toLowerCase();
+  const hints = [
+    'メモに保存',
+    'keep_pin',
+    'thumb_up',
+    'thumb_down',
+    'copy_all',
+    '今日 •',
+    '入力を開始します',
+    '個のソース',
+    'チャット'
+  ];
+  const hit = hints.reduce((count, hint) => (lowered.includes(hint) ? count + 1 : count), 0);
+  return hit >= 2;
+}
+
 function isVisible(el: HTMLElement): boolean {
   const rect = el.getBoundingClientRect();
   const style = window.getComputedStyle(el);
@@ -1311,6 +1328,7 @@ export class NotebookLMAdapter {
       if (text.length < 80) continue;
       if (this.looksLikeUiOnlyText(text)) continue;
       if (isSourceImportUiText(text)) continue;
+      if (isLikelyChatUiText(text)) continue;
 
       const rect = node.getBoundingClientRect();
       let score = 0;
@@ -1324,6 +1342,8 @@ export class NotebookLMAdapter {
       if (isCardOrDescendant) score += 14;
 
       if (node.matches('[role="dialog"], [aria-modal="true"]')) score += 24;
+      if (rect.left < window.innerWidth * 0.48) score += 8;
+      if (rect.left > window.innerWidth * 0.52) score -= 12;
 
       // Prefer blocks spatially close to source cards, but not tiny snippets.
       const horizontalDistance = Math.abs(rect.left - cardRect.left);
@@ -1700,10 +1720,8 @@ export class NotebookLMAdapter {
     return results;
   }
 
-  async scanSourcesWithDetails(): Promise<SourceRecord[]> {
-    const base = await this.scanSources();
+  async enrichSourcesWithDetails(base: SourceRecord[]): Promise<SourceRecord[]> {
     if (base.length === 0) return [];
-
     this.closeSourceDialog();
     await wait(120);
     await this.ensureSourcesTabVisible();
@@ -1727,7 +1745,7 @@ export class NotebookLMAdapter {
       const fallbackBody = this.cleanExtractedBody(source.body);
 
       detailed.push({
-        ...live,
+        ...source,
         body: bodyCandidate.length >= Math.max(120, fallbackBody.length) ? bodyCandidate : fallbackBody
       });
 
@@ -1735,6 +1753,11 @@ export class NotebookLMAdapter {
     }
 
     return detailed;
+  }
+
+  async scanSourcesWithDetails(): Promise<SourceRecord[]> {
+    const base = await this.scanSources();
+    return this.enrichSourcesWithDetails(base);
   }
 
   async deleteSources(sources: SourceRecord[], dryRun: boolean): Promise<{
