@@ -27,7 +27,7 @@ export const NOTEBOOKLM_SELECTORS = {
     'button[aria-label*="text"]'
   ],
   sourceModeTextHints: {
-    text: ['コピーしたテキスト', '貼り付けテキスト', 'paste text', 'pasted text', 'text'],
+    text: ['コピーしたテキスト', '貼り付けテキスト', 'paste text', 'pasted text', 'copied text'],
     url: ['ウェブサイト', 'website', 'url', 'link', 'リンク'],
     file: ['ファイル', 'file', 'upload']
   },

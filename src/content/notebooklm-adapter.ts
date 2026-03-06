@@ -211,6 +211,11 @@ export class NotebookLMAdapter {
   }
 
   private async selectSourceMode(container: HTMLElement, type: QuickAddPayload['type']): Promise<HTMLElement> {
+    if (type !== 'url') {
+      // Text/image paths use the dedicated "copied text" flow in fillInputAndSubmit.
+      return container;
+    }
+
     const hints = type === 'url'
       ? NOTEBOOKLM_SELECTORS.sourceModeTextHints.url
       : NOTEBOOKLM_SELECTORS.sourceModeTextHints.text;
@@ -225,42 +230,83 @@ export class NotebookLMAdapter {
     return container;
   }
 
-  private async tryClipboardTextImport(container: HTMLElement, text: string): Promise<boolean> {
-    const modeButton = this.findButtonByHints(container, NOTEBOOKLM_SELECTORS.sourceModeTextHints.text);
-    if (!modeButton) return false;
-
+  private async writeClipboardText(text: string): Promise<boolean> {
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) {
         await navigator.clipboard.writeText(text);
+        return true;
       }
     } catch (error) {
-      logger.warn('adapter', 'clipboard write failed', error);
+      logger.warn('adapter', 'navigator.clipboard.writeText failed', error);
+    }
+
+    try {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.left = '-9999px';
+      textarea.style.top = '-9999px';
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      const copied = document.execCommand('copy');
+      document.body.removeChild(textarea);
+      return copied;
+    } catch (error) {
+      logger.warn('adapter', 'execCommand(copy) failed', error);
+      return false;
+    }
+  }
+
+  private async waitForDialogClosed(timeoutMs = 2800): Promise<boolean> {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const dialog = this.findSourceDialogContainer();
+      if (!dialog) return true;
+      await wait(120);
+    }
+    return false;
+  }
+
+  private async tryClipboardTextImport(container: HTMLElement, text: string): Promise<boolean> {
+    const modeButton = this.findButtonByHints(container, ['コピーしたテキスト', 'paste text', 'pasted text', 'copied text']);
+    if (!modeButton) return false;
+
+    const clipboardOk = await this.writeClipboardText(text);
+    if (!clipboardOk) {
+      logger.warn('adapter', 'clipboard text write failed; skip copied-text mode');
+      return false;
     }
 
     modeButton.click();
     await wait(300);
 
-    const nextDialog = await this.waitForSourceDialog(1400);
-    if (!nextDialog) {
+    const closed = await this.waitForDialogClosed(2200);
+    if (closed) {
       return true;
     }
 
+    const nextDialog = await this.waitForSourceDialog(1400);
+    if (!nextDialog) return false;
+
     const input = this.findBestInput(nextDialog, 'text');
     if (!input) {
-      const submit = this.findSubmitButton(nextDialog);
+      const submit = this.findSubmitButton(nextDialog, null);
       if (submit) {
         submit.click();
-        return true;
+        return this.waitForDialogClosed(1800);
       }
       return false;
     }
 
     this.setElementValue(input, text);
     await wait(120);
-    const submit = this.findSubmitButton(nextDialog);
+    this.triggerEnterSubmit(input);
+    await wait(120);
+    const submit = this.findSubmitButton(nextDialog, input);
     if (!submit) return false;
     submit.click();
-    return true;
+    return this.waitForDialogClosed(1800);
   }
 
   private makePayloadText(payload: QuickAddPayload): string {
@@ -314,16 +360,12 @@ export class NotebookLMAdapter {
     const submit = this.findSubmitButton(container, input);
     if (!submit) {
       // Some NotebookLM variants accept Enter without a visible submit button.
-      const dialogAfterEnter = this.findSourceDialogContainer();
-      if (!dialogAfterEnter) {
-        return true;
-      }
-      return false;
+      return this.waitForDialogClosed(1800);
     }
 
     submit.click();
     await wait(120);
-    return true;
+    return this.waitForDialogClosed(1800);
   }
 
   private findDeleteButtonsInDocument(): HTMLElement[] {
