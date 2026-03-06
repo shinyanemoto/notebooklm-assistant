@@ -300,6 +300,98 @@ export class NotebookLMAdapter {
     return Array.from(buttons);
   }
 
+  private findSourceListContainer(): HTMLElement | null {
+    const selectors = [
+      '[data-testid*="source-list"]',
+      '[data-testid*="sources"]',
+      '[aria-label*="Sources"]',
+      '[aria-label*="ソース"]',
+      'aside',
+      'section',
+      'div'
+    ];
+
+    const hints = ['sources', 'source list', 'ソース', 'source'];
+    let best: { score: number; el: HTMLElement } | null = null;
+
+    for (const selector of selectors) {
+      const nodes = Array.from(document.querySelectorAll<HTMLElement>(selector));
+      for (const node of nodes) {
+        if (!isVisible(node)) continue;
+        const text = readElementText(node);
+        if (!text) continue;
+
+        let score = 0;
+        if (containsAny(text, hints)) score += 2;
+        if (node.querySelector('[data-testid*="source-item"], [data-source-id]')) score += 4;
+        if (node.querySelector('button[aria-label*="ソース"], button[aria-label*="source"]')) score += 2;
+        if (node.querySelector('a[href*="source"]')) score += 1;
+
+        const childCount = node.querySelectorAll('li, article, section, [role="listitem"]').length;
+        if (childCount >= 2) score += 2;
+
+        if (score >= 3 && (!best || score > best.score)) {
+          best = { score, el: node };
+        }
+      }
+    }
+
+    return best?.el ?? null;
+  }
+
+  private collectSourceCardsFromContainer(container: ParentNode): SourceRecord[] {
+    const cardSet = new Set<HTMLElement>();
+
+    for (const selector of NOTEBOOKLM_SELECTORS.sourceCards) {
+      for (const node of Array.from(container.querySelectorAll<HTMLElement>(selector))) {
+        if (isVisible(node)) cardSet.add(node);
+      }
+    }
+
+    // Fallback heuristic: list-like blocks with meaningful text.
+    for (const node of Array.from(container.querySelectorAll<HTMLElement>('li, article, section, [role="listitem"], div'))) {
+      if (!isVisible(node)) continue;
+      const text = readElementText(node);
+      if (text.length < 20 || text.length > 3000) continue;
+
+      const hasSourceSignals =
+        node.querySelector('a[href*="http"]') ||
+        node.querySelector('button[aria-label*="delete"], button[aria-label*="削除"]') ||
+        node.querySelector('[data-testid*="source"]');
+
+      if (hasSourceSignals) {
+        cardSet.add(node);
+      }
+    }
+
+    const results: SourceRecord[] = [];
+    let index = 1;
+
+    for (const card of cardSet) {
+      const title = this.sourceTitleFromCard(card);
+      if (!title) continue;
+
+      const body = this.sourceBodyFromCard(card);
+      const url = this.sourceUrlFromCard(card);
+      const deleteButtonEl = queryFirstVisible<HTMLElement>(NOTEBOOKLM_SELECTORS.deleteButtons, card) ||
+        this.findDeleteButtonsInDocument().find((button) => this.cardFromDeleteButton(button) === card);
+
+      const id = card.getAttribute('data-source-id') || makeId(`${title}-${index}`, index);
+      results.push({
+        id,
+        title,
+        body,
+        url,
+        domPathHint: closestCssPath(card),
+        cardEl: card,
+        deleteButtonEl: deleteButtonEl ?? undefined
+      });
+      index += 1;
+    }
+
+    return results;
+  }
+
   private cardFromDeleteButton(button: HTMLElement): HTMLElement | null {
     return button.closest<HTMLElement>(
       '[data-testid*="source-item"], [data-source-id], li[role="listitem"], div[role="listitem"], article, section, div[class*="source"]'
@@ -325,45 +417,41 @@ export class NotebookLMAdapter {
   }
 
   private collectSourceCards(): SourceRecord[] {
-    const cardSet = new Set<HTMLElement>();
-
-    for (const selector of NOTEBOOKLM_SELECTORS.sourceCards) {
-      for (const node of Array.from(document.querySelectorAll<HTMLElement>(selector))) {
-        cardSet.add(node);
+    const container = this.findSourceListContainer();
+    if (container) {
+      const fromContainer = this.collectSourceCardsFromContainer(container);
+      if (fromContainer.length > 0) {
+        return fromContainer;
       }
     }
 
-    const deleteButtons = this.findDeleteButtonsInDocument();
-    for (const button of deleteButtons) {
-      const card = this.cardFromDeleteButton(button);
-      if (card) cardSet.add(card);
+    // Document-wide fallback when source container is not detected.
+    const fromDocument = this.collectSourceCardsFromContainer(document);
+    if (fromDocument.length > 0) {
+      return fromDocument;
     }
 
+    // Final fallback: build records from delete buttons.
     const results: SourceRecord[] = [];
     let index = 1;
+    for (const button of this.findDeleteButtonsInDocument()) {
+      const card = this.cardFromDeleteButton(button);
+      if (!card) continue;
+      if (!isVisible(card)) continue;
 
-    for (const card of cardSet) {
       const title = this.sourceTitleFromCard(card);
       if (!title) continue;
-
-      const body = this.sourceBodyFromCard(card);
-      const url = this.sourceUrlFromCard(card);
-      const deleteButtonEl = queryFirstVisible<HTMLElement>(NOTEBOOKLM_SELECTORS.deleteButtons, card) ||
-        this.findDeleteButtonsInDocument().find((button) => this.cardFromDeleteButton(button) === card);
-
-      const id = card.getAttribute('data-source-id') || makeId(title, index);
       results.push({
-        id,
+        id: makeId(`${title}-${index}`, index),
         title,
-        body,
-        url,
+        body: this.sourceBodyFromCard(card),
+        url: this.sourceUrlFromCard(card),
         domPathHint: closestCssPath(card),
         cardEl: card,
-        deleteButtonEl: deleteButtonEl ?? undefined
+        deleteButtonEl: button
       });
       index += 1;
     }
-
     return results;
   }
 
@@ -371,12 +459,19 @@ export class NotebookLMAdapter {
     const hasExisting = this.collectSourceCards().length > 0;
     if (hasExisting) return;
 
-    const button = queryFirstVisible<HTMLElement>(NOTEBOOKLM_SELECTORS.openSourceListButtons) ||
-      findClickableByText(NOTEBOOKLM_SELECTORS.openSourceListTextHints);
-    if (!button) return;
+    const candidates = [
+      queryFirstVisible<HTMLElement>(NOTEBOOKLM_SELECTORS.openSourceListButtons),
+      findClickableByText(NOTEBOOKLM_SELECTORS.openSourceListTextHints),
+      findClickableByText(['sources', 'source', 'ソース', 'ソース一覧'])
+    ].filter(Boolean) as HTMLElement[];
 
-    button.click();
-    await wait(300);
+    for (const button of candidates) {
+      button.click();
+      await wait(320);
+      if (this.collectSourceCards().length > 0) {
+        return;
+      }
+    }
   }
 
   private async ensureSourceFlowReady(): Promise<{ ready: boolean; container?: HTMLElement }> {
@@ -453,8 +548,15 @@ export class NotebookLMAdapter {
     if (results.length > 0) return results;
 
     await this.ensureSourceListVisible();
-    await wait(220);
+    await wait(300);
     results = this.collectSourceCards();
+
+    if (results.length === 0) {
+      logger.warn('adapter', 'source scan returned 0 items after fallbacks');
+    } else {
+      logger.info('adapter', `source scan found ${results.length} items`);
+    }
+
     return results;
   }
 
