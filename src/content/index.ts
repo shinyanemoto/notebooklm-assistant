@@ -49,6 +49,42 @@ const ids = {
 
 const CHAT_EXPORT_PROMPT =
   '全ソースを内容変更することなく出して。省略せず、各ソースのタイトルと本文をそのまま列挙してください。';
+const ROLE_PROMPT_DEFAULT = `【役割定義】
+あなたは、私の業務を強力にサポートする「タスク整理エージェント：伴走くん」です。
+提供されたすべてのソース（メモ、URL、スクショ、画像）を「処理すべき生データ」として扱い、それらを構造化・整理することがあなたの使命です。
+
+【基本スタイル】
+
+ソース絶対主義： 推測で語らず、必ずソースの内容に基づいて回答してください。
+
+簡潔・明快： 回答は箇条書きやMarkdown形式を多用し、一目で状況がわかるようにしてください。
+
+時間の扱い： あなたは「現在時刻」を知りません。日付に関する指示がある場合は、ソース内の記述を最優先し、不明な場合は「期限：未設定」として扱ってください。
+
+【コア・コマンド】
+ユーザーから以下のキーワードが出た場合、対応するアクションを実行してください。
+
+「整理して」
+
+現在読み込まれているすべてのソースを横断的に解析し、以下の形式で出力してください。
+
+## 📅 [日付：ソースに記載があれば]
+
+### ✅ 完了済み （完了と判断できるタスク）
+
+### 🚀 進行中・未完了 （未完了のタスクと次のアクション）
+
+### 📝 アイデア・備忘録 （タスクではないが残すべき情報）
+
+「圧縮して」
+
+ソース群の情報を統合し、**「明日これだけをソースとしてアップロードすれば業務を再開できる」**という、究極に無駄を削ぎ落とした1つの構造化テキスト（Markdown）を出力してください。
+
+【禁止事項】
+
+ソースにない外部情報を勝手に付け加えないでください。
+
+「お疲れ様です」などの過度な挨拶は不要です。構造化に全力を出してください。`;
 
 function esc(text: string): string {
   return text
@@ -90,6 +126,15 @@ function withPrefix(pathPrefix: string, filename: string): string {
 async function sendRuntimeMessage(message: RuntimeMessage): Promise<RuntimeResponse> {
   const response = await chrome.runtime.sendMessage(message);
   return (response ?? { ok: false, error: 'No response' }) as RuntimeResponse;
+}
+
+async function copyTextToClipboard(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function dedupeSources(sources: SourceRecord[]): SourceRecord[] {
@@ -952,68 +997,44 @@ function renderShell(): void {
 
     <div id="${ids.managerModal}" class="nlm-modal">
       <div class="nlm-panel">
-        <h2>ソース整理 / 統合 / バックアップ / 削除</h2>
+        <h2>整理/統合（新UI）</h2>
+
+        <div class="nlm-row">
+          <label>テンプレプロンプト: 全ソースエクスポート</label>
+          <textarea id="nlm-template-export" rows="4">${CHAT_EXPORT_PROMPT}</textarea>
+          <div class="nlm-actions">
+            <button id="nlm-copy-template-export" class="primary">全ソースプロンプトをコピー</button>
+          </div>
+        </div>
+
+        <div class="nlm-row">
+          <label>テンプレプロンプト: カスタム役割（伴走くん）</label>
+          <textarea id="nlm-template-role" rows="14">${ROLE_PROMPT_DEFAULT}</textarea>
+          <div class="nlm-actions">
+            <button id="nlm-copy-template-role" class="primary">伴走くんプロンプトをコピー</button>
+          </div>
+        </div>
+
+        <div class="nlm-grid-2">
+          <div class="nlm-row">
+            <label>保存ファイル名（任意）</label>
+            <input id="nlm-summary-title" type="text" placeholder="source_summary_YYYYMMDD_HHMMSS" />
+          </div>
+          <div class="nlm-row">
+            <label>補足（任意）</label>
+            <input id="nlm-summary-note" type="text" placeholder="保存メモ" />
+          </div>
+        </div>
+
+        <div class="nlm-row">
+          <label>ソースのまとめ（保存用テキスト）</label>
+          <textarea id="nlm-summary-text" rows="12" placeholder="ここにまとめ結果を貼り付けて保存します"></textarea>
+        </div>
 
         <div class="nlm-actions">
-          <button id="nlm-refresh-sources">ソース再取得</button>
-          <button id="nlm-select-all">全選択</button>
-          <button id="nlm-clear-selection">選択解除</button>
+          <button id="nlm-summary-copy">まとめをクリップボードへコピー</button>
+          <button id="nlm-summary-save" class="primary">まとめをテキスト保存（.txt）</button>
           <button id="nlm-close-manager">閉じる</button>
-        </div>
-
-        <div class="nlm-row">
-          <label>ソース一覧</label>
-          <div id="${ids.sourceList}" class="nlm-source-list"></div>
-        </div>
-
-        <div class="nlm-grid-2">
-          <div class="nlm-row">
-            <label>マージ方式</label>
-            <select id="nlm-merge-mode">
-              <option value="simple">単純連結</option>
-              <option value="structured">構造化</option>
-            </select>
-          </div>
-          <div class="nlm-row">
-            <label>統合タイトル</label>
-            <input id="nlm-merge-title" type="text" placeholder="統合ソース_YYYY-MM-DD" />
-          </div>
-        </div>
-
-        <div class="nlm-row">
-          <label>補足メモ</label>
-          <textarea id="nlm-merge-notes" rows="2" placeholder="統合時のメモ"></textarea>
-        </div>
-
-        <div class="nlm-actions">
-          <button id="nlm-backup-selected">選択ソースをバックアップ</button>
-          <button id="nlm-backup-all-raw">チャット経由で全ソース出力→MD保存</button>
-          <button id="nlm-preview-merge">統合プレビュー生成</button>
-          <button id="nlm-add-merged" class="primary">統合ソースを追加（事前バックアップ付き）</button>
-          <button id="nlm-export-merged-file">統合をMD保存→ファイル追加導線</button>
-        </div>
-
-        <div class="nlm-row">
-          <label>統合プレビュー（Markdown）</label>
-          <textarea id="${ids.mergePreview}" rows="10" placeholder="ここに統合Markdownが表示されます"></textarea>
-        </div>
-
-        <div class="nlm-grid-2">
-          <div class="nlm-row">
-            <label>削除対象</label>
-            <select id="${ids.deleteTarget}">
-              <option value="selected">チェックしたソース</option>
-              <option value="all">表示中の全ソース</option>
-            </select>
-          </div>
-          <div class="nlm-row">
-            <label><input id="${ids.dryRun}" type="checkbox" /> Dry-run (削除せずシミュレーション)</label>
-            <div id="${ids.backupInfo}" class="nlm-empty">最新バックアップ対象: なし</div>
-          </div>
-        </div>
-
-        <div class="nlm-actions">
-          <button id="${ids.deleteButton}" class="danger" disabled>一括削除（バックアップ済み対象のみ）</button>
         </div>
 
         <div id="${ids.status}" class="nlm-status" data-level="info">待機中</div>
@@ -1056,7 +1077,7 @@ function bindEvents(): void {
 
   getById<HTMLButtonElement>('nlm-open-manager').addEventListener('click', async () => {
     showManagerModal();
-    await refreshSources();
+    setStatus('待機中', 'info');
   });
 
   getById<HTMLButtonElement>('nlm-read-clipboard').addEventListener('click', async () => {
@@ -1085,44 +1106,64 @@ function bindEvents(): void {
   getById<HTMLButtonElement>('nlm-qa-cancel').addEventListener('click', hideQuickModal);
   getById<HTMLButtonElement>('nlm-close-manager').addEventListener('click', hideManagerModal);
 
-  getById<HTMLButtonElement>('nlm-refresh-sources').addEventListener('click', async () => {
-    await refreshSources();
+  getById<HTMLButtonElement>('nlm-copy-template-export').addEventListener('click', async () => {
+    const text = getById<HTMLTextAreaElement>('nlm-template-export').value.trim();
+    if (!text) {
+      setStatus('全ソーステンプレが空です。', 'error');
+      return;
+    }
+    const ok = await copyTextToClipboard(text);
+    setStatus(ok ? '全ソーステンプレをコピーしました。' : 'コピーに失敗しました。', ok ? 'success' : 'error');
   });
 
-  getById<HTMLButtonElement>('nlm-select-all').addEventListener('click', () => {
-    state.selectedIds = new Set(state.sources.map((s) => s.id));
-    renderSourceList();
+  getById<HTMLButtonElement>('nlm-copy-template-role').addEventListener('click', async () => {
+    const text = getById<HTMLTextAreaElement>('nlm-template-role').value.trim();
+    if (!text) {
+      setStatus('伴走くんテンプレが空です。', 'error');
+      return;
+    }
+    const ok = await copyTextToClipboard(text);
+    setStatus(ok ? '伴走くんテンプレをコピーしました。' : 'コピーに失敗しました。', ok ? 'success' : 'error');
   });
 
-  getById<HTMLButtonElement>('nlm-clear-selection').addEventListener('click', () => {
-    state.selectedIds = new Set();
-    renderSourceList();
+  getById<HTMLButtonElement>('nlm-summary-copy').addEventListener('click', async () => {
+    const text = getById<HTMLTextAreaElement>('nlm-summary-text').value.trim();
+    if (!text) {
+      setStatus('保存テキストが空です。', 'error');
+      return;
+    }
+    const ok = await copyTextToClipboard(text);
+    setStatus(ok ? 'まとめテキストをコピーしました。' : 'コピーに失敗しました。', ok ? 'success' : 'error');
   });
 
-  getById<HTMLButtonElement>('nlm-backup-selected').addEventListener('click', async () => {
-    await createBackup('manual', selectedSources());
-  });
+  getById<HTMLButtonElement>('nlm-summary-save').addEventListener('click', async () => {
+    const summaryText = getById<HTMLTextAreaElement>('nlm-summary-text').value.trim();
+    const manualName = getById<HTMLInputElement>('nlm-summary-title').value.trim();
+    const note = getById<HTMLInputElement>('nlm-summary-note').value.trim();
+    if (!summaryText) {
+      setStatus('保存対象のテキストが空です。', 'error');
+      return;
+    }
 
-  getById<HTMLButtonElement>('nlm-backup-all-raw').addEventListener('click', async () => {
-    await backupAllSourcesAsRawSingleFile();
-  });
+    const filenameStem = sanitizeFilenameStem(manualName || `source_summary_${timestampForFilename()}`);
+    const filename = withPrefix(state.settings.backupPathPrefix, `${filenameStem}.txt`);
+    const payload = note
+      ? `${summaryText}\n\n---\n補足: ${note}\n保存日時: ${formatTimestampToSecond()}`
+      : summaryText;
 
-  getById<HTMLButtonElement>('nlm-preview-merge').addEventListener('click', async () => {
-    await previewMerge();
-  });
-
-  getById<HTMLButtonElement>('nlm-add-merged').addEventListener('click', async () => {
-    await addMergedSource();
-  });
-
-  getById<HTMLButtonElement>('nlm-export-merged-file').addEventListener('click', async () => {
-    await exportMergedForManualUpload();
-  });
-
-  getById<HTMLSelectElement>(ids.deleteTarget).addEventListener('change', updateDeleteButtonState);
-
-  getById<HTMLButtonElement>(ids.deleteButton).addEventListener('click', async () => {
-    await executeDelete();
+    setStatus('テキスト保存中...', 'info');
+    const response = await sendRuntimeMessage({
+      type: 'DOWNLOAD_MARKDOWN',
+      payload: {
+        filename,
+        content: payload
+      }
+    });
+    if (!response.ok) {
+      setStatus(`保存失敗: ${response.error || '不明なエラー'}`, 'error');
+      return;
+    }
+    setStatus(`テキスト保存完了: ${filename}`, 'success');
   });
 
   getById<HTMLDivElement>(ids.quickModal).addEventListener('click', (event) => {
@@ -1150,12 +1191,8 @@ function registerMessageHandler(): void {
 
     if (message.type === 'OPEN_MANAGER') {
       showManagerModal();
-      refreshSources().then(() => {
-        sendResponse({ ok: true });
-      }).catch((error) => {
-        sendResponse({ ok: false, error: (error as Error).message });
-      });
-      return true;
+      sendResponse({ ok: true });
+      return false;
     }
 
     sendResponse({ ok: false, error: 'Unhandled message' });
