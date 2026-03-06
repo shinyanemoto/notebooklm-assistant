@@ -252,6 +252,19 @@ function defaultTitleFromContent(type: QuickAddPayload['type'], content: string)
   return firstLine.slice(0, 40);
 }
 
+function buildClipboardImageTextFallback(payload: QuickAddPayload): string {
+  return [
+    `# ${payload.title || 'Clipboard Image'}`,
+    '',
+    '- 種別: クリップボード画像（自動画像アップロード失敗）',
+    payload.sourceUrl ? `- 元ページ: ${payload.sourceUrl}` : '- 元ページ: （不明）',
+    '- 注記: 画像本体はブラウザ制約により自動アップロードできない場合があります',
+    payload.memo ? `- メモ: ${payload.memo}` : '- メモ: （なし）',
+    '',
+    payload.content ? `補足入力:\n${payload.content}` : '補足入力: （なし）'
+  ].join('\n');
+}
+
 function buildQuickPayload(): QuickAddPayload {
   const inputText = getById<HTMLTextAreaElement>('nlm-qa-input').value.trim();
   const manualTitle = getById<HTMLInputElement>('nlm-qa-title').value.trim();
@@ -299,6 +312,21 @@ async function executeQuickAdd(): Promise<void> {
   }
 
   if (payload.type === 'clipboardImage') {
+    adapter.closeSourceDialog();
+    const fallbackResult = await adapter.addSource({
+      type: 'text',
+      title: payload.title || 'Clipboard Image Fallback',
+      memo: payload.memo,
+      content: buildClipboardImageTextFallback(payload),
+      sourceUrl: payload.sourceUrl
+    });
+
+    if (fallbackResult.success) {
+      setStatus('画像の直接追加に失敗したため、画像メタ情報をテキストソースとして追加しました。', 'success');
+      hideQuickModal();
+      return;
+    }
+
     const clipboardPrepared = payload.imageDataUrl ? await writeImageDataUrlToClipboard(payload.imageDataUrl) : false;
     const dialogOpened = await adapter.openSourceDialog();
     const uploadPickerOpened = (!clipboardPrepared && dialogOpened) ? await adapter.prepareManualImageUpload() : false;

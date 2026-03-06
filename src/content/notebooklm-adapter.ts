@@ -29,6 +29,10 @@ function isVisible(el: HTMLElement): boolean {
   return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
 }
 
+function isAssistantUiNode(el: Element | null): boolean {
+  return !!el?.closest('#nlm-assistant-root');
+}
+
 function queryAllDeep<T extends Element>(root: ParentNode, selector: string): T[] {
   const results = new Set<T>();
   const queue: ParentNode[] = [root];
@@ -85,6 +89,7 @@ export class NotebookLMAdapter {
     for (const selector of NOTEBOOKLM_SELECTORS.sourceDialogContainers) {
       const containers = Array.from(document.querySelectorAll<HTMLElement>(selector));
       for (const container of containers) {
+        if (isAssistantUiNode(container)) continue;
         if (!isVisible(container)) continue;
         const text = readElementText(container);
         if (containsAny(text, NOTEBOOKLM_SELECTORS.sourceDialogTextHints)) {
@@ -719,11 +724,13 @@ export class NotebookLMAdapter {
 
     for (const selector of NOTEBOOKLM_SELECTORS.deleteButtons) {
       for (const node of Array.from(document.querySelectorAll<HTMLElement>(selector))) {
+        if (isAssistantUiNode(node)) continue;
         buttons.add(node);
       }
     }
 
     for (const node of Array.from(document.querySelectorAll<HTMLElement>('button, [role="button"]'))) {
+      if (isAssistantUiNode(node)) continue;
       const label = (node.innerText || node.getAttribute('aria-label') || '').trim();
       if (!label) continue;
       if (containsAny(label, NOTEBOOKLM_SELECTORS.deleteTextHints)) {
@@ -751,6 +758,7 @@ export class NotebookLMAdapter {
     for (const selector of selectors) {
       const nodes = Array.from(document.querySelectorAll<HTMLElement>(selector));
       for (const node of nodes) {
+        if (isAssistantUiNode(node)) continue;
         if (!isVisible(node)) continue;
         const text = readElementText(node);
         if (!text) continue;
@@ -778,12 +786,14 @@ export class NotebookLMAdapter {
 
     for (const selector of NOTEBOOKLM_SELECTORS.sourceCards) {
       for (const node of Array.from(container.querySelectorAll<HTMLElement>(selector))) {
+        if (isAssistantUiNode(node)) continue;
         if (isVisible(node)) cardSet.add(node);
       }
     }
 
     // Fallback heuristic: list-like blocks with meaningful text.
     for (const node of Array.from(container.querySelectorAll<HTMLElement>('li, article, section, [role="listitem"], div'))) {
+      if (isAssistantUiNode(node)) continue;
       if (!isVisible(node)) continue;
       const text = readElementText(node);
       if (text.length < 20 || text.length > 3000) continue;
@@ -983,6 +993,28 @@ export class NotebookLMAdapter {
   async openSourceDialog(): Promise<boolean> {
     const flow = await this.ensureSourceFlowReady();
     return !!(flow.ready && flow.container);
+  }
+
+  closeSourceDialog(): boolean {
+    const dialog = this.findSourceDialogContainer();
+    if (!dialog) return false;
+
+    const closeButton = queryFirstVisible<HTMLElement>(
+      [
+        'button[aria-label*="Close"]',
+        'button[aria-label*="close"]',
+        'button[aria-label*="閉じる"]'
+      ],
+      dialog
+    ) || findClickableByText(['閉じる', 'close', 'キャンセル', 'cancel']);
+
+    if (closeButton) {
+      closeButton.click();
+      return true;
+    }
+
+    dialog.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
+    return true;
   }
 
   async prepareManualImageUpload(): Promise<boolean> {
