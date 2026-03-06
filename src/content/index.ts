@@ -219,6 +219,14 @@ function updateImagePreview(): void {
   clearButton.style.display = 'none';
 }
 
+function resetQuickForm(): void {
+  getById<HTMLTextAreaElement>('nlm-qa-input').value = '';
+  getById<HTMLInputElement>('nlm-qa-title').value = '';
+  getById<HTMLTextAreaElement>('nlm-qa-memo').value = '';
+  state.clipboardImageDataUrl = null;
+  updateImagePreview();
+}
+
 async function ensureClipboardImageLoaded(): Promise<void> {
   const dataUrl = await readClipboardImage();
   state.clipboardImageDataUrl = dataUrl;
@@ -418,6 +426,7 @@ async function executeQuickAdd(): Promise<void> {
       logger.warn('content', 'failed to reveal downloaded file', error);
     }
 
+    resetQuickForm();
     hideQuickModal();
     setStatus('NotebookLMの「ファイルをアップロード」を起動中...', 'info');
     const prepared = await adapter.prepareManualFileUpload();
@@ -446,6 +455,7 @@ async function executeQuickAdd(): Promise<void> {
   const result = await adapter.addSource(payloadWithTimestamp);
   if (result.success) {
     setStatus('追加フローを実行しました。', 'success');
+    resetQuickForm();
     hideQuickModal();
     return;
   }
