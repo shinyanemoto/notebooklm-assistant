@@ -3,17 +3,28 @@ export const NOTEBOOKLM_SELECTORS = {
 
   openSourcePanelButtons: [
     'button[data-testid*="add-source"]',
-    'button[aria-label*="source"]',
+    'button[aria-label*="Add source"]',
+    'button[aria-label*="add source"]',
+    'button[aria-label*="ソースを追加"]',
     '[data-testid*="source-add"] button',
     '[class*="add-source"] button'
   ],
-  openSourcePanelTextHints: ['add source', 'source', 'ソースを追加', 'ソース'],
+  openSourcePanelTextHints: ['add source', 'add sources', 'ソースを追加', 'ソースを追加する'],
+
+  sourceDialogContainers: [
+    '[role="dialog"]',
+    '[aria-modal="true"]',
+    '[class*="source-dialog"]',
+    '[class*="sourceModal"]'
+  ],
+  sourceDialogTextHints: ['add source', 'add sources', 'ソースを追加', '新しいソース'],
 
   sourceInputFields: [
     'textarea',
     '[contenteditable="true"]',
     'input[type="url"]',
-    'input[type="text"]'
+    'input[placeholder*="http"]',
+    'input[placeholder*="URL"]'
   ],
   submitSourceButtons: [
     'button[data-testid*="create"]',
@@ -21,22 +32,26 @@ export const NOTEBOOKLM_SELECTORS = {
     '[class*="submit"] button',
     'button[type="submit"]'
   ],
-  submitSourceTextHints: ['create', 'add', 'save', '作成', '追加', '保存'],
+  submitSourceTextHints: ['create source', 'add source', 'create', 'add', 'save', '作成', '追加', '保存'],
+
+  openSourceListButtons: [
+    'button[data-testid*="sources"]',
+    'button[aria-label*="Sources"]',
+    'button[aria-label*="ソース"]',
+    '[role="tab"][aria-label*="Sources"]',
+    '[role="tab"][aria-label*="ソース"]'
+  ],
+  openSourceListTextHints: ['sources', 'source list', 'ソース'],
 
   sourceCards: [
     '[data-testid*="source-item"]',
     '[data-source-id]',
     '[class*="source-item"]',
     '[class*="sourceCard"]',
+    'li[role="listitem"]',
     'div[role="listitem"]'
   ],
-  sourceTitle: [
-    'h2',
-    'h3',
-    '[data-testid*="title"]',
-    '[class*="title"]',
-    '[aria-label*="title"]'
-  ],
+  sourceTitle: ['h2', 'h3', '[data-testid*="title"]', '[class*="title"]', '[aria-label*="title"]', 'strong'],
   sourceBody: ['[class*="content"]', '[class*="snippet"]', 'p', '[data-testid*="body"]'],
   sourceUrl: ['a[href^="http"]'],
 

@@ -29,6 +29,7 @@ const state: UiState = {
 };
 
 const ids = {
+  fabWrap: 'nlm-fab-wrap',
   quickModal: 'nlm-quick-modal',
   managerModal: 'nlm-manager-modal',
   status: 'nlm-status',
@@ -112,7 +113,7 @@ function updateDeleteButtonState(): void {
 function renderSourceList(): void {
   const root = getById<HTMLDivElement>(ids.sourceList);
   if (state.sources.length === 0) {
-    root.innerHTML = '<div class="nlm-empty">ソースが見つかりません。NotebookLMのソースパネルを表示して再読み込みしてください。</div>';
+    root.innerHTML = '<div class="nlm-empty">ソースが見つかりません。ソースパネルを表示後に再取得してください。</div>';
     updateDeleteButtonState();
     return;
   }
@@ -150,7 +151,7 @@ function renderSourceList(): void {
 
 async function refreshSources(): Promise<void> {
   try {
-    const scanned = adapter.scanSources();
+    const scanned = await adapter.scanSources();
     state.sources = dedupeSources(scanned);
     state.selectedIds = new Set(state.sources.map((s) => s.id));
     renderSourceList();
@@ -159,29 +160,6 @@ async function refreshSources(): Promise<void> {
     logger.error('content', error);
     setStatus(`ソース読み込み失敗: ${(error as Error).message}`, 'error');
   }
-}
-
-function getQuickFormValues(): {
-  type: QuickAddPayload['type'];
-  title: string;
-  memo: string;
-  content: string;
-} {
-  return {
-    type: getById<HTMLSelectElement>('nlm-qa-type').value as QuickAddPayload['type'],
-    title: getById<HTMLInputElement>('nlm-qa-title').value.trim(),
-    memo: getById<HTMLTextAreaElement>('nlm-qa-memo').value.trim(),
-    content: getById<HTMLTextAreaElement>('nlm-qa-content').value.trim()
-  };
-}
-
-function updateQuickTypeVisibility(): void {
-  const type = getById<HTMLSelectElement>('nlm-qa-type').value;
-  const contentWrap = getById<HTMLDivElement>('nlm-qa-content-wrap');
-  const clipboardWrap = getById<HTMLDivElement>('nlm-qa-clipboard-wrap');
-
-  contentWrap.style.display = type === 'clipboardImage' ? 'none' : 'block';
-  clipboardWrap.style.display = type === 'clipboardImage' ? 'block' : 'none';
 }
 
 async function blobToDataUrl(blob: Blob): Promise<string> {
@@ -209,42 +187,25 @@ async function readClipboardImage(): Promise<string> {
   throw new Error('クリップボード画像が見つかりません。');
 }
 
-function showQuickModal(prefill?: { addType?: QuickAddPayload['type']; content?: string; title?: string; memo?: string }): void {
-  const modal = getById<HTMLDivElement>(ids.quickModal);
-  modal.style.display = 'flex';
-  if (prefill?.addType) {
-    getById<HTMLSelectElement>('nlm-qa-type').value = prefill.addType;
+function updateImagePreview(): void {
+  const preview = getById<HTMLImageElement>('nlm-qa-image-preview');
+  const clearButton = getById<HTMLButtonElement>('nlm-qa-clear-image');
+  if (state.clipboardImageDataUrl) {
+    preview.src = state.clipboardImageDataUrl;
+    preview.style.display = 'block';
+    clearButton.style.display = 'inline-block';
+    return;
   }
-  if (prefill?.content) {
-    getById<HTMLTextAreaElement>('nlm-qa-content').value = prefill.content;
-  }
-  if (prefill?.title) {
-    getById<HTMLInputElement>('nlm-qa-title').value = prefill.title;
-  }
-  if (prefill?.memo) {
-    getById<HTMLTextAreaElement>('nlm-qa-memo').value = prefill.memo;
-  }
-  updateQuickTypeVisibility();
-}
 
-function hideQuickModal(): void {
-  getById<HTMLDivElement>(ids.quickModal).style.display = 'none';
-}
-
-function showManagerModal(): void {
-  getById<HTMLDivElement>(ids.managerModal).style.display = 'flex';
-}
-
-function hideManagerModal(): void {
-  getById<HTMLDivElement>(ids.managerModal).style.display = 'none';
+  preview.removeAttribute('src');
+  preview.style.display = 'none';
+  clearButton.style.display = 'none';
 }
 
 async function ensureClipboardImageLoaded(): Promise<void> {
   const dataUrl = await readClipboardImage();
   state.clipboardImageDataUrl = dataUrl;
-  const preview = getById<HTMLImageElement>('nlm-qa-image-preview');
-  preview.src = dataUrl;
-  preview.style.display = 'block';
+  updateImagePreview();
 }
 
 async function downloadImageBackup(dataUrl: string): Promise<void> {
@@ -261,41 +222,70 @@ async function downloadImageBackup(dataUrl: string): Promise<void> {
   }
 }
 
-async function executeQuickAdd(): Promise<void> {
-  const values = getQuickFormValues();
-  const selectionText = window.getSelection()?.toString().trim() || '';
+function isLikelyUrl(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  try {
+    const url = new URL(trimmed);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
 
-  const payload: QuickAddPayload = {
-    type: values.type,
-    title: values.title || (values.type === 'url' ? 'URL追加' : values.type === 'clipboardImage' ? 'クリップボード画像' : 'テキスト追加'),
-    memo: values.memo,
-    content: values.content,
+function defaultTitleFromContent(type: QuickAddPayload['type'], content: string): string {
+  if (type === 'url' && isLikelyUrl(content)) {
+    const url = new URL(content.trim());
+    return `URL: ${url.hostname}`;
+  }
+
+  if (type === 'clipboardImage') {
+    return `Clipboard Image ${new Date().toISOString().slice(0, 10)}`;
+  }
+
+  const firstLine = content.split('\n').map((v) => v.trim()).find(Boolean) || 'テキスト追加';
+  return firstLine.slice(0, 40);
+}
+
+function buildQuickPayload(): QuickAddPayload {
+  const inputText = getById<HTMLTextAreaElement>('nlm-qa-input').value.trim();
+  const manualTitle = getById<HTMLInputElement>('nlm-qa-title').value.trim();
+  const memo = getById<HTMLTextAreaElement>('nlm-qa-memo').value.trim();
+
+  let type: QuickAddPayload['type'] = 'text';
+  if (state.clipboardImageDataUrl) {
+    type = 'clipboardImage';
+  } else if (isLikelyUrl(inputText)) {
+    type = 'url';
+  }
+
+  const title = manualTitle || defaultTitleFromContent(type, inputText);
+
+  if (type === 'clipboardImage') {
+    const mergedMemo = [memo, inputText].filter(Boolean).join('\n');
+    return {
+      type,
+      title,
+      memo: mergedMemo,
+      content: inputText,
+      imageDataUrl: state.clipboardImageDataUrl ?? undefined,
+      sourceUrl: location.href
+    };
+  }
+
+  return {
+    type,
+    title,
+    memo,
+    content: inputText || (type === 'url' ? location.href : ''),
     sourceUrl: location.href
   };
+}
 
-  if (payload.type === 'text' && !payload.content) {
-    payload.content = selectionText;
-  }
+async function executeQuickAdd(): Promise<void> {
+  const payload = buildQuickPayload();
 
-  if (payload.type === 'url' && !payload.content) {
-    payload.content = location.href;
-  }
-
-  if (payload.type === 'clipboardImage') {
-    if (!state.clipboardImageDataUrl) {
-      try {
-        await ensureClipboardImageLoaded();
-      } catch (error) {
-        setStatus(`画像取得失敗: ${(error as Error).message}`, 'error');
-        return;
-      }
-    }
-    payload.imageDataUrl = state.clipboardImageDataUrl ?? undefined;
-    if (!payload.imageDataUrl) {
-      setStatus('画像データがありません。', 'error');
-      return;
-    }
-
+  if (payload.type === 'clipboardImage' && payload.imageDataUrl) {
     try {
       await downloadImageBackup(payload.imageDataUrl);
     } catch (error) {
@@ -305,7 +295,7 @@ async function executeQuickAdd(): Promise<void> {
   }
 
   if (!payload.content && payload.type !== 'clipboardImage') {
-    setStatus('追加内容が空です。', 'error');
+    setStatus('貼り付け内容が空です。テキストまたはURLを貼り付けてください。', 'error');
     return;
   }
 
@@ -460,12 +450,97 @@ async function executeDelete(): Promise<void> {
   }
 }
 
+function findSafetyNoticeElement(): HTMLElement | null {
+  const hints = ['NotebookLMは不正確な場合があります', '回答は再確認してください', 'NotebookLM can make mistakes'];
+  const nodes = Array.from(document.querySelectorAll<HTMLElement>('span, p, div'));
+  for (const node of nodes) {
+    const text = (node.textContent || '').trim();
+    if (!text) continue;
+    if (hints.some((hint) => text.includes(hint))) {
+      const rect = node.getBoundingClientRect();
+      if (rect.width > 80 && rect.height > 8) {
+        return node;
+      }
+    }
+  }
+  return null;
+}
+
+function positionFabWrap(): void {
+  const wrap = document.getElementById(ids.fabWrap);
+  if (!wrap) return;
+
+  const notice = findSafetyNoticeElement();
+  if (notice) {
+    const rect = notice.getBoundingClientRect();
+    const top = Math.max(8, rect.top - wrap.offsetHeight - 8);
+    const left = Math.max(8, rect.left);
+    wrap.style.top = `${top}px`;
+    wrap.style.left = `${left}px`;
+    wrap.style.right = 'auto';
+    wrap.style.bottom = 'auto';
+    return;
+  }
+
+  wrap.style.left = 'auto';
+  wrap.style.top = 'auto';
+  wrap.style.right = '16px';
+  wrap.style.bottom = '20px';
+}
+
+function setupFabAutoPosition(): void {
+  let rafId = 0;
+  const schedule = (): void => {
+    if (rafId !== 0) return;
+    rafId = requestAnimationFrame(() => {
+      rafId = 0;
+      positionFabWrap();
+    });
+  };
+
+  schedule();
+  window.addEventListener('resize', schedule, { passive: true });
+  window.addEventListener('scroll', schedule, { passive: true });
+
+  const observer = new MutationObserver(() => schedule());
+  observer.observe(document.body, { childList: true, subtree: true, attributes: true, characterData: true });
+
+  setInterval(schedule, 1000);
+}
+
+function showQuickModal(prefill?: { content?: string; title?: string; memo?: string }): void {
+  const modal = getById<HTMLDivElement>(ids.quickModal);
+  modal.style.display = 'flex';
+
+  if (prefill?.content) {
+    getById<HTMLTextAreaElement>('nlm-qa-input').value = prefill.content;
+  }
+  if (prefill?.title) {
+    getById<HTMLInputElement>('nlm-qa-title').value = prefill.title;
+  }
+  if (prefill?.memo) {
+    getById<HTMLTextAreaElement>('nlm-qa-memo').value = prefill.memo;
+  }
+}
+
+function hideQuickModal(): void {
+  getById<HTMLDivElement>(ids.quickModal).style.display = 'none';
+}
+
+function showManagerModal(): void {
+  getById<HTMLDivElement>(ids.managerModal).style.display = 'flex';
+}
+
+function hideManagerModal(): void {
+  getById<HTMLDivElement>(ids.managerModal).style.display = 'none';
+}
+
 function injectStyles(): void {
   if (document.getElementById('nlm-assistant-style')) return;
   const style = document.createElement('style');
   style.id = 'nlm-assistant-style';
   style.textContent = `
-    .nlm-fab-wrap { position: fixed; right: 16px; bottom: 18px; z-index: 2147483640; display: flex; flex-direction: column; gap: 8px; }
+    .nlm-fab-wrap { position: fixed; right: 16px; bottom: 20px; z-index: 2147483640; display: flex; flex-direction: row; gap: 8px; align-items: center; }
     .nlm-fab { border: 0; border-radius: 999px; padding: 10px 14px; background: #1f4c3f; color: #fff; font-size: 12px; cursor: pointer; box-shadow: 0 4px 14px rgba(0,0,0,0.25); }
     .nlm-fab.secondary { background: #2f3f56; }
     .nlm-modal { position: fixed; inset: 0; z-index: 2147483646; background: rgba(0, 0, 0, 0.45); display: none; align-items: center; justify-content: center; }
@@ -489,7 +564,9 @@ function injectStyles(): void {
     .nlm-url { color: #0f4c81; font-size: 11px; word-break: break-all; }
     .nlm-empty { color: #666; font-size: 12px; }
     #nlm-qa-image-preview { width: 100%; max-height: 180px; object-fit: contain; border: 1px solid #ddd; border-radius: 6px; display: none; }
+    #nlm-qa-clear-image { display: none; }
     .nlm-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .nlm-note { font-size: 12px; color: #4b5563; }
     @media (max-width: 800px) { .nlm-grid-2 { grid-template-columns: 1fr; } .nlm-panel { width: 95vw; } }
   `;
   document.head.appendChild(style);
@@ -499,45 +576,36 @@ function renderShell(): void {
   const root = document.createElement('div');
   root.id = 'nlm-assistant-root';
   root.innerHTML = `
-    <div class="nlm-fab-wrap">
+    <div id="${ids.fabWrap}" class="nlm-fab-wrap">
       <button id="nlm-open-quick" class="nlm-fab">クイック追加</button>
       <button id="nlm-open-manager" class="nlm-fab secondary">整理/統合</button>
     </div>
 
     <div id="${ids.quickModal}" class="nlm-modal">
       <div class="nlm-panel">
-        <h2>クイック追加</h2>
+        <h2>クイック追加（ワンステップ）</h2>
+        <div class="nlm-note">テキスト/URL/画像を同じ入力欄に貼り付けて「実行」。画像は Ctrl+V か画像読込ボタンで取得できます。</div>
         <div class="nlm-row">
-          <label>追加種別</label>
-          <select id="nlm-qa-type">
-            <option value="text">テキスト</option>
-            <option value="url">URL</option>
-            <option value="clipboardImage">クリップボード画像</option>
-          </select>
+          <label>入力欄（テキスト・URL・画像メモ共通）</label>
+          <textarea id="nlm-qa-input" rows="8" placeholder="ここにテキストまたはURLを貼り付け。画像はCtrl+Vで貼り付け可能"></textarea>
         </div>
-        <div class="nlm-grid-2">
-          <div class="nlm-row">
-            <label>タイトル</label>
-            <input id="nlm-qa-title" type="text" placeholder="例: 競合調査メモ" />
-          </div>
-          <div class="nlm-row">
-            <label>補足メモ</label>
-            <textarea id="nlm-qa-memo" rows="2" placeholder="任意"></textarea>
-          </div>
-        </div>
-        <div id="nlm-qa-content-wrap" class="nlm-row">
-          <label>本文 / URL</label>
-          <textarea id="nlm-qa-content" rows="6" placeholder="テキストまたはURLを入力"></textarea>
-          <div class="nlm-actions">
-            <button id="nlm-use-selection">選択テキストを挿入</button>
-            <button id="nlm-use-current-url">現在のURLを挿入</button>
-          </div>
-        </div>
-        <div id="nlm-qa-clipboard-wrap" class="nlm-row" style="display:none;">
-          <label>クリップボード画像</label>
+        <div class="nlm-row">
+          <label>画像プレビュー（検出時のみ）</label>
           <img id="nlm-qa-image-preview" alt="clipboard preview" />
           <div class="nlm-actions">
             <button id="nlm-read-clipboard">クリップボード画像を読み込む</button>
+            <button id="nlm-qa-clear-image">画像をクリア</button>
+            <button id="nlm-use-current-url">現在のURLを入力</button>
+          </div>
+        </div>
+        <div class="nlm-grid-2">
+          <div class="nlm-row">
+            <label>タイトル（任意）</label>
+            <input id="nlm-qa-title" type="text" placeholder="未入力なら自動生成" />
+          </div>
+          <div class="nlm-row">
+            <label>補足メモ（任意）</label>
+            <textarea id="nlm-qa-memo" rows="2" placeholder="任意"></textarea>
           </div>
         </div>
         <div class="nlm-actions">
@@ -619,6 +687,31 @@ function renderShell(): void {
   document.body.appendChild(root);
 }
 
+function bindQuickInputPasteHandler(): void {
+  const input = getById<HTMLTextAreaElement>('nlm-qa-input');
+  input.addEventListener('paste', (event) => {
+    const items = event.clipboardData?.items;
+    if (!items) return;
+
+    const imageItem = Array.from(items).find((item) => item.type.startsWith('image/'));
+    if (!imageItem) return;
+
+    const file = imageItem.getAsFile();
+    if (!file) return;
+
+    event.preventDefault();
+    blobToDataUrl(file)
+      .then((dataUrl) => {
+        state.clipboardImageDataUrl = dataUrl;
+        updateImagePreview();
+        setStatus('画像を貼り付けから検出しました。', 'success');
+      })
+      .catch((error) => {
+        setStatus(`画像貼り付け処理失敗: ${(error as Error).message}`, 'error');
+      });
+  });
+}
+
 function bindEvents(): void {
   getById<HTMLButtonElement>('nlm-open-quick').addEventListener('click', () => {
     showQuickModal();
@@ -629,19 +722,6 @@ function bindEvents(): void {
     await refreshSources();
   });
 
-  getById<HTMLSelectElement>('nlm-qa-type').addEventListener('change', () => {
-    updateQuickTypeVisibility();
-  });
-
-  getById<HTMLButtonElement>('nlm-use-selection').addEventListener('click', () => {
-    const text = window.getSelection()?.toString().trim() || '';
-    getById<HTMLTextAreaElement>('nlm-qa-content').value = text;
-  });
-
-  getById<HTMLButtonElement>('nlm-use-current-url').addEventListener('click', () => {
-    getById<HTMLTextAreaElement>('nlm-qa-content').value = location.href;
-  });
-
   getById<HTMLButtonElement>('nlm-read-clipboard').addEventListener('click', async () => {
     try {
       await ensureClipboardImageLoaded();
@@ -649,6 +729,16 @@ function bindEvents(): void {
     } catch (error) {
       setStatus(`画像読み込み失敗: ${(error as Error).message}`, 'error');
     }
+  });
+
+  getById<HTMLButtonElement>('nlm-qa-clear-image').addEventListener('click', () => {
+    state.clipboardImageDataUrl = null;
+    updateImagePreview();
+    setStatus('画像をクリアしました。', 'info');
+  });
+
+  getById<HTMLButtonElement>('nlm-use-current-url').addEventListener('click', () => {
+    getById<HTMLTextAreaElement>('nlm-qa-input').value = location.href;
   });
 
   getById<HTMLButtonElement>('nlm-qa-submit').addEventListener('click', async () => {
@@ -693,16 +783,18 @@ function bindEvents(): void {
   getById<HTMLDivElement>(ids.quickModal).addEventListener('click', (event) => {
     if (event.target === event.currentTarget) hideQuickModal();
   });
+
   getById<HTMLDivElement>(ids.managerModal).addEventListener('click', (event) => {
     if (event.target === event.currentTarget) hideManagerModal();
   });
+
+  bindQuickInputPasteHandler();
 }
 
 function registerMessageHandler(): void {
   chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResponse) => {
     if (message.type === 'OPEN_QUICK_ADD') {
       showQuickModal({
-        addType: message.payload?.addType,
         content: message.payload?.content,
         title: message.payload?.title,
         memo: message.payload?.memo
@@ -738,8 +830,9 @@ async function init(): Promise<void> {
   renderShell();
   bindEvents();
   registerMessageHandler();
-  updateQuickTypeVisibility();
+  updateImagePreview();
   setStatus('待機中', 'info');
+  setupFabAutoPosition();
   logger.info('content', 'NotebookLM assistant initialized');
 }
 
