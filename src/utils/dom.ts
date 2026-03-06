@@ -16,6 +16,7 @@ export function findClickableByText(texts: string[]): HTMLElement | null {
   const candidates = Array.from(document.querySelectorAll<HTMLElement>('button, [role="button"], a'));
   const normalizedTexts = texts.map((t) => t.toLowerCase());
   for (const candidate of candidates) {
+    if (candidate.closest('#nlm-assistant-root')) continue;
     const label = (candidate.innerText || candidate.getAttribute('aria-label') || '').trim().toLowerCase();
     if (!label) continue;
     if (normalizedTexts.some((text) => label.includes(text))) {

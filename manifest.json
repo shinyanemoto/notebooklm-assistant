@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "NotebookLM Assistant MVP",
   "description": "NotebookLMでのソース追加・統合・バックアップ・一括削除を支援する拡張機能",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "permissions": [
     "storage",
     "downloads",

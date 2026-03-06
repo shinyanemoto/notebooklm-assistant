@@ -33,6 +33,13 @@ function isAssistantUiNode(el: Element | null): boolean {
   return !!el?.closest('#nlm-assistant-root');
 }
 
+function nodeSelectorAll<T extends Element>(container: ParentNode, selector: string): T[] {
+  if (container instanceof Document || container instanceof ShadowRoot) {
+    return queryAllDeep<T>(container, selector);
+  }
+  return Array.from(container.querySelectorAll<T>(selector));
+}
+
 function queryAllDeep<T extends Element>(root: ParentNode, selector: string): T[] {
   const results = new Set<T>();
   const queue: ParentNode[] = [root];
@@ -781,37 +788,75 @@ export class NotebookLMAdapter {
     return best?.el ?? null;
   }
 
+  private isLikelySourceCard(node: HTMLElement, inSourceContainer: boolean): boolean {
+    const text = readElementText(node);
+    if (text.length < 12 || text.length > 5000) return false;
+
+    const label = `${node.getAttribute('aria-label') || ''} ${node.className || ''}`;
+    const hasSourceWord = containsAny(label, ['source', 'sources', 'ソース', 'reference', 'refs']);
+    const hasSourceSignals = !!(
+      node.querySelector('[data-testid*="source"], [data-source-id], [role="treeitem"]') ||
+      node.querySelector('a[href^="http"]') ||
+      node.querySelector('button[aria-label*="delete"], button[aria-label*="削除"]')
+    );
+    const hasRowShape = !!(
+      node.matches('[role="listitem"], [role="treeitem"], article, section') ||
+      node.querySelector('h2, h3, strong, [role="heading"]')
+    );
+    const hasActionButtons = !!node.querySelector('button, [role="button"]');
+
+    let score = 0;
+    if (hasSourceSignals) score += 3;
+    if (hasRowShape) score += 2;
+    if (hasActionButtons) score += 1;
+    if (hasSourceWord) score += 2;
+    if (inSourceContainer) score += 1;
+
+    return score >= (inSourceContainer ? 3 : 5);
+  }
+
+  private compactCardCandidates(nodes: HTMLElement[]): HTMLElement[] {
+    const unique = Array.from(new Set(nodes));
+    unique.sort((a, b) => a.querySelectorAll('*').length - b.querySelectorAll('*').length);
+
+    const filtered: HTMLElement[] = [];
+    for (const node of unique) {
+      if (filtered.some((kept) => node.contains(kept))) {
+        continue;
+      }
+      filtered.push(node);
+    }
+    return filtered;
+  }
+
   private collectSourceCardsFromContainer(container: ParentNode): SourceRecord[] {
     const cardSet = new Set<HTMLElement>();
+    const inSourceContainer = container !== document;
 
     for (const selector of NOTEBOOKLM_SELECTORS.sourceCards) {
-      for (const node of Array.from(container.querySelectorAll<HTMLElement>(selector))) {
+      for (const node of nodeSelectorAll<HTMLElement>(container, selector)) {
         if (isAssistantUiNode(node)) continue;
-        if (isVisible(node)) cardSet.add(node);
+        if (!isVisible(node)) continue;
+        if (!this.isLikelySourceCard(node, inSourceContainer)) continue;
+        cardSet.add(node);
       }
     }
 
     // Fallback heuristic: list-like blocks with meaningful text.
-    for (const node of Array.from(container.querySelectorAll<HTMLElement>('li, article, section, [role="listitem"], div'))) {
+    const fallbackSelector = inSourceContainer
+      ? 'li, article, section, [role="listitem"], [role="treeitem"], div'
+      : 'li, article, section, [role="listitem"], [role="treeitem"]';
+    for (const node of nodeSelectorAll<HTMLElement>(container, fallbackSelector)) {
       if (isAssistantUiNode(node)) continue;
       if (!isVisible(node)) continue;
-      const text = readElementText(node);
-      if (text.length < 20 || text.length > 3000) continue;
-
-      const hasSourceSignals =
-        node.querySelector('a[href*="http"]') ||
-        node.querySelector('button[aria-label*="delete"], button[aria-label*="削除"]') ||
-        node.querySelector('[data-testid*="source"]');
-
-      if (hasSourceSignals) {
-        cardSet.add(node);
-      }
+      if (!this.isLikelySourceCard(node, inSourceContainer)) continue;
+      cardSet.add(node);
     }
 
     const results: SourceRecord[] = [];
     let index = 1;
 
-    for (const card of cardSet) {
+    for (const card of this.compactCardCandidates(Array.from(cardSet))) {
       const title = this.sourceTitleFromCard(card);
       if (!title) continue;
 
@@ -843,9 +888,14 @@ export class NotebookLMAdapter {
   }
 
   private sourceTitleFromCard(card: HTMLElement): string {
-    const titleEl = queryFirstVisible<HTMLElement>(NOTEBOOKLM_SELECTORS.sourceTitle, card);
-    const title = readElementText(titleEl);
-    if (title) return title;
+    const candidates = Array.from(card.querySelectorAll<HTMLElement>(NOTEBOOKLM_SELECTORS.sourceTitle.join(',')))
+      .filter((el) => readElementText(el).length > 0);
+    for (const el of candidates) {
+      const text = readElementText(el);
+      if (text.length < 2 || text.length > 180) continue;
+      if (containsAny(text, ['delete', 'remove', 'open', 'menu', 'more', '削除', '開く', 'その他'])) continue;
+      return text;
+    }
     return readElementText(card).slice(0, 80);
   }
 
@@ -1062,12 +1112,20 @@ export class NotebookLMAdapter {
       return [];
     }
 
-    let results = this.collectSourceCards();
-    if (results.length > 0) return results;
+    let results: SourceRecord[] = [];
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      if (attempt === 1 || attempt === 4) {
+        await this.ensureSourceListVisible();
+      } else if (attempt === 2 || attempt === 6) {
+        await this.ensureSourcesTabVisible();
+      }
 
-    await this.ensureSourceListVisible();
-    await wait(300);
-    results = this.collectSourceCards();
+      results = this.collectSourceCards();
+      if (results.length > 0) {
+        break;
+      }
+      await wait(260 + (attempt * 90));
+    }
 
     if (results.length === 0) {
       logger.warn('adapter', 'source scan returned 0 items after fallbacks');

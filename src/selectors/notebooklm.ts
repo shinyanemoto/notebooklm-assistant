@@ -82,8 +82,10 @@ export const NOTEBOOKLM_SELECTORS = {
 
   openSourceListButtons: [
     'button[data-testid*="sources"]',
+    'button[data-testid*="source"]',
     'button[aria-label*="Sources"]',
     'button[aria-label*="ソース"]',
+    '[role="tab"][data-testid*="source"]',
     '[role="tab"][aria-label*="Sources"]',
     '[role="tab"][aria-label*="ソース"]'
   ],
@@ -92,12 +94,14 @@ export const NOTEBOOKLM_SELECTORS = {
   sourceCards: [
     '[data-testid*="source-item"]',
     '[data-source-id]',
+    '[role="treeitem"]',
     '[class*="source-item"]',
     '[class*="sourceCard"]',
+    '[data-testid*="source"]',
     'li[role="listitem"]',
     'div[role="listitem"]'
   ],
-  sourceTitle: ['h2', 'h3', '[data-testid*="title"]', '[class*="title"]', '[aria-label*="title"]', 'strong'],
+  sourceTitle: ['h2', 'h3', '[data-testid*="title"]', '[class*="title"]', '[aria-label*="title"]', 'strong', '[role="heading"]', 'button', 'a'],
   sourceBody: ['[class*="content"]', '[class*="snippet"]', 'p', '[data-testid*="body"]'],
   sourceUrl: ['a[href^="http"]'],
 
