@@ -71,6 +71,13 @@ export class NotebookLMAdapter {
     return null;
   }
 
+  private async ensureSourcesTabVisible(): Promise<void> {
+    const sourceTab = findClickableByText(['ソース', 'sources']);
+    if (!sourceTab) return;
+    sourceTab.click();
+    await wait(220);
+  }
+
   private findButtons(container: ParentNode): HTMLElement[] {
     const items = new Set<HTMLElement>();
 
@@ -271,41 +278,34 @@ export class NotebookLMAdapter {
   private async tryClipboardTextImport(container: HTMLElement, text: string): Promise<boolean> {
     const modeButton = this.findButtonByHints(container, ['コピーしたテキスト', 'paste text', 'pasted text', 'copied text']);
     if (!modeButton) return false;
-
-    const clipboardOk = await this.writeClipboardText(text);
-    if (!clipboardOk) {
-      logger.warn('adapter', 'clipboard text write failed; skip copied-text mode');
-      return false;
-    }
-
     modeButton.click();
-    await wait(300);
+    await wait(160);
 
-    const closed = await this.waitForDialogClosed(2200);
-    if (closed) {
-      return true;
-    }
-
-    const nextDialog = await this.waitForSourceDialog(1400);
-    if (!nextDialog) return false;
+    const nextDialog = await this.waitForSourceDialog(1400) ?? container;
 
     const input = this.findBestInput(nextDialog, 'text');
-    if (!input) {
-      const submit = this.findSubmitButton(nextDialog, null);
+    if (input) {
+      this.setElementValue(input, text);
+      await wait(60);
+      this.triggerEnterSubmit(input);
+      await wait(80);
+      const submit = this.findSubmitButton(nextDialog, input);
       if (submit) {
         submit.click();
         return this.waitForDialogClosed(5000);
       }
+      return this.waitForDialogClosed(3000);
+    }
+
+    // Fallback: clipboard import mode for NotebookLM variants that read directly from clipboard.
+    const clipboardOk = await this.writeClipboardText(text);
+    if (!clipboardOk) {
+      logger.warn('adapter', 'clipboard text write failed; copied-text fallback unavailable');
       return false;
     }
 
-    this.setElementValue(input, text);
-    await wait(120);
-    this.triggerEnterSubmit(input);
-    await wait(120);
-    const submit = this.findSubmitButton(nextDialog, input);
-    if (!submit) return false;
-    submit.click();
+    const retryButton = this.findButtonByHints(nextDialog, ['コピーしたテキスト', 'paste text', 'pasted text', 'copied text']) ?? modeButton;
+    retryButton.click();
     return this.waitForDialogClosed(5000);
   }
 
@@ -576,12 +576,19 @@ export class NotebookLMAdapter {
       findClickableByText(NOTEBOOKLM_SELECTORS.openSourcePanelTextHints);
 
     if (!openButton) {
+      await this.ensureSourcesTabVisible();
+    }
+
+    const retryOpenButton = queryFirstVisible<HTMLElement>(NOTEBOOKLM_SELECTORS.openSourcePanelButtons) ||
+      findClickableByText(NOTEBOOKLM_SELECTORS.openSourcePanelTextHints);
+
+    if (!retryOpenButton) {
       logger.warn('adapter', 'Add source button not found');
       return { ready: false };
     }
 
-    openButton.click();
-    await wait(220);
+    retryOpenButton.click();
+    await wait(140);
 
     const container = await this.waitForSourceDialog(2200);
     if (!container) {

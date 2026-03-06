@@ -223,23 +223,7 @@ async function downloadImageBackup(dataUrl: string): Promise<void> {
   }
 }
 
-function isLikelyUrl(text: string): boolean {
-  const trimmed = text.trim();
-  if (!trimmed) return false;
-  try {
-    const url = new URL(trimmed);
-    return url.protocol === 'http:' || url.protocol === 'https:';
-  } catch {
-    return false;
-  }
-}
-
 function defaultTitleFromContent(type: QuickAddPayload['type'], content: string): string {
-  if (type === 'url' && isLikelyUrl(content)) {
-    const url = new URL(content.trim());
-    return `URL: ${url.hostname}`;
-  }
-
   if (type === 'clipboardImage') {
     return `Clipboard Image ${new Date().toISOString().slice(0, 10)}`;
   }
@@ -253,12 +237,7 @@ function buildQuickPayload(): QuickAddPayload {
   const manualTitle = getById<HTMLInputElement>('nlm-qa-title').value.trim();
   const memo = getById<HTMLTextAreaElement>('nlm-qa-memo').value.trim();
 
-  let type: QuickAddPayload['type'] = 'text';
-  if (state.clipboardImageDataUrl) {
-    type = 'clipboardImage';
-  } else if (isLikelyUrl(inputText)) {
-    type = 'url';
-  }
+  const type: QuickAddPayload['type'] = state.clipboardImageDataUrl ? 'clipboardImage' : 'text';
 
   const title = manualTitle || defaultTitleFromContent(type, inputText);
 
@@ -278,7 +257,7 @@ function buildQuickPayload(): QuickAddPayload {
     type,
     title,
     memo,
-    content: inputText || (type === 'url' ? location.href : ''),
+    content: inputText,
     sourceUrl: location.href
   };
 }
