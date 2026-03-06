@@ -638,10 +638,12 @@ async function executeDelete(): Promise<void> {
   }
 
   const dryRun = getById<HTMLInputElement>(ids.dryRun).checked;
+  setStatus(`一括削除を実行中... 対象 ${targets.length}件`, 'info');
   const result = await adapter.deleteSources(targets, dryRun);
   const summary = `削除結果: success=${result.success}, failed=${result.failed}, skipped=${result.skipped}`;
   if (result.failed > 0) {
-    setStatus(`${summary} / ${result.failures[0]}`, 'error');
+    const details = result.failures.slice(0, 3).join(' / ');
+    setStatus(`${summary} / ${details}`, 'error');
   } else {
     setStatus(summary, 'success');
   }

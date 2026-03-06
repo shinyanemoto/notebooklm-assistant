@@ -789,19 +789,12 @@ export class NotebookLMAdapter {
     return !!el && el.isConnected && isVisible(el);
   }
 
-  private findLiveSourceRecord(source: SourceRecord): SourceRecord | null {
-    if (this.isConnectedVisible(source.cardEl)) {
-      return source;
-    }
-
-    const current = this.collectSourceCards();
-    if (current.length === 0) return null;
-
+  private pickBestSourceMatch(source: SourceRecord, candidates: SourceRecord[]): SourceRecord | null {
     const titleKey = this.normalizeSourceKey(source.title);
     const bodyKey = this.normalizeSourceKey(source.body).slice(0, 120);
     let best: { score: number; item: SourceRecord } | null = null;
 
-    for (const item of current) {
+    for (const item of candidates) {
       let score = 0;
       if (source.id && item.id === source.id) score += 6;
 
@@ -820,6 +813,19 @@ export class NotebookLMAdapter {
     }
 
     return best?.item ?? null;
+  }
+
+  private async findLiveSourceRecord(source: SourceRecord): Promise<SourceRecord | null> {
+    if (this.isConnectedVisible(source.cardEl)) {
+      return source;
+    }
+
+    const current = this.collectSourceCards();
+    const inView = this.pickBestSourceMatch(source, current);
+    if (inView) return inView;
+
+    const scanned = await this.collectAllSourceCardsWithScroll();
+    return this.pickBestSourceMatch(source, scanned);
   }
 
   private revealSourceCardActions(card: HTMLElement): void {
@@ -957,7 +963,7 @@ export class NotebookLMAdapter {
   }
 
   private async deleteSingleSource(source: SourceRecord): Promise<{ ok: boolean; reason?: string }> {
-    const liveSource = this.findLiveSourceRecord(source);
+    const liveSource = await this.findLiveSourceRecord(source);
     if (!liveSource) {
       return { ok: false, reason: '対象ソースカードを再取得できませんでした' };
     }
@@ -1544,18 +1550,34 @@ export class NotebookLMAdapter {
       }
 
       try {
-        const deleted = await this.deleteSingleSource(source);
-        if (deleted.ok) {
+        let deleted = false;
+        let lastReason = '削除操作に失敗しました';
+
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+          await this.ensureSourcesTabVisible();
+          await this.ensureSourceListVisible();
+
+          const step = await this.deleteSingleSource(source);
+          if (step.ok) {
+            deleted = true;
+            break;
+          }
+
+          lastReason = step.reason || lastReason;
+          await wait(180 + (attempt * 140));
+        }
+
+        if (deleted) {
           result.success += 1;
         } else {
           result.failed += 1;
-          result.failures.push(`${source.title}: ${deleted.reason || '削除操作に失敗しました'}`);
+          result.failures.push(`${source.title}: ${lastReason}`);
         }
       } catch (error) {
         result.failed += 1;
         result.failures.push(`${source.title}: ${(error as Error).message}`);
       }
-      await wait(180);
+      await wait(260);
     }
 
     return result;
